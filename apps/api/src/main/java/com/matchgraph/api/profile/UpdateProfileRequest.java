@@ -1,13 +1,14 @@
 package com.matchgraph.api.profile;
 
-public record CreateProfileRequest(
-    String externalRef,
+import java.time.OffsetDateTime;
+
+public record UpdateProfileRequest(
     String displayName,
-    String profileType,
     String status,
     String bio,
     String city,
     String region,
-    String country
+    String country,
+    OffsetDateTime lastActiveAt
 ) {
 }
