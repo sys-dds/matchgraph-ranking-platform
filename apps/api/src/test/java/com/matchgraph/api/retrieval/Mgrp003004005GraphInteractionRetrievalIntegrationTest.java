@@ -101,6 +101,18 @@ class Mgrp003004005GraphInteractionRetrievalIntegrationTest {
         assertThat(selfEdge.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
 
         graph(actor.id(), "block", blockedCandidate.id());
+        assertThat(exchange(
+            "/api/v1/profiles/" + actor.id() + "/graph/follow",
+            HttpMethod.POST,
+            new GraphActionRequest(blockedCandidate.id(), "blocked follow"),
+            Map.class
+        ).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(exchange(
+            "/api/v1/profiles/" + blockedCandidate.id() + "/graph/mute",
+            HttpMethod.POST,
+            new GraphActionRequest(actor.id(), "blocked mute"),
+            Map.class
+        ).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         graph(actor.id(), "mute", mutedCandidate.id());
         graph(actor.id(), "report", reportedCandidate.id());
 
@@ -141,6 +153,26 @@ class Mgrp003004005GraphInteractionRetrievalIntegrationTest {
         assertThat(duplicateLike.id()).isEqualTo(like.id());
         assertThat(like.candidateSource()).isEqualTo("SHARED_INTEREST");
         assertThat(like.rankingVersion()).isEqualTo("future-ranking-version");
+        ResponseEntity<Map> conflictingLike = exchange(
+            "/api/v1/profiles/" + actor.id() + "/interactions",
+            HttpMethod.POST,
+            new RecordInteractionRequest(
+                "client-like-1",
+                blockedCandidate.id(),
+                "LIKE",
+                OffsetDateTime.now(),
+                "request-1",
+                null,
+                "SHARED_INTEREST",
+                "future-ranking-version",
+                "future-experiment",
+                "variant-a",
+                1,
+                Map.of("surface", "test")
+            ),
+            Map.class
+        );
+        assertThat(conflictingLike.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
 
         recordInteraction(actor.id(), new RecordInteractionRequest(
             "client-block-1",
@@ -183,7 +215,7 @@ class Mgrp003004005GraphInteractionRetrievalIntegrationTest {
         CandidateRetrievalRun retrievalRun = exchange(
             "/api/v1/profiles/" + actor.id() + "/retrieval/run",
             HttpMethod.POST,
-            new RunRetrievalRequest(20),
+            new RunRetrievalRequest(20, null, null),
             CandidateRetrievalRun.class
         ).getBody();
 
@@ -201,13 +233,22 @@ class Mgrp003004005GraphInteractionRetrievalIntegrationTest {
         assertThat(retrievalRun.exclusionCount()).isGreaterThanOrEqualTo(5);
         assertThat(retrievalRun.toString()).doesNotContain("score");
 
+        CandidateRetrievalRun limitedRun = exchange(
+            "/api/v1/profiles/" + actor.id() + "/retrieval/run",
+            HttpMethod.POST,
+            new RunRetrievalRequest(2, null, null),
+            CandidateRetrievalRun.class
+        ).getBody();
+        assertThat(limitedRun.candidates()).hasSizeLessThanOrEqualTo(2);
+
         CandidateRetrievalRun fetchedRun = restTemplate.getForObject(
             "/api/v1/profiles/{profileId}/retrieval/runs/{runId}",
             CandidateRetrievalRun.class,
             actor.id(),
-            retrievalRun.id()
+            limitedRun.id()
         );
-        assertThat(fetchedRun.id()).isEqualTo(retrievalRun.id());
+        assertThat(fetchedRun.id()).isEqualTo(limitedRun.id());
+        assertThat(fetchedRun.candidates()).hasSizeLessThanOrEqualTo(2);
         assertThat(fetchedRun.candidates()).extracting(RetrievedCandidate::candidateProfileId).contains(sharedCandidate.id());
 
         ResponseEntity<Map> feedResponse = restTemplate.getForEntity("/api/v1/feed/" + actor.id(), Map.class);
