@@ -7,6 +7,7 @@ COPY mvnw.cmd mvnw.cmd
 COPY pom.xml pom.xml
 COPY src src
 
+RUN chmod +x mvnw
 RUN ./mvnw -DskipTests package
 
 FROM eclipse-temurin:21-jre
