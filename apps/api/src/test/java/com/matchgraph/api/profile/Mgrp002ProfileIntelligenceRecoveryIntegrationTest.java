@@ -3,6 +3,7 @@ package com.matchgraph.api.profile;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -124,6 +125,49 @@ class Mgrp002ProfileIntelligenceRecoveryIntegrationTest {
         assertThat(validEmbedding.getBody().embeddingStatus()).isEqualTo("CURRENT");
         assertThat(validEmbedding.getBody().dimensions()).isEqualTo(384);
         assertThat(validEmbedding.getBody().activeVersionName()).isEqualTo("profile-intel-v1");
+
+        exchange(
+            "/api/v1/profiles/" + created.id(),
+            HttpMethod.PATCH,
+            new UpdateProfileRequest(null, "INACTIVE", null, null, null, null, null),
+            ProfileResponse.class
+        );
+        assertThat(restTemplate.getForObject(
+            "/api/v1/profiles/{profileId}/embedding/status",
+            ProfileEmbeddingStatusResponse.class,
+            created.id()
+        ).embeddingStatus()).isEqualTo("CURRENT");
+
+        exchange(
+            "/api/v1/profiles/" + created.id(),
+            HttpMethod.PATCH,
+            new UpdateProfileRequest(null, null, null, null, null, null, OffsetDateTime.now()),
+            ProfileResponse.class
+        );
+        assertThat(restTemplate.getForObject(
+            "/api/v1/profiles/{profileId}/embedding/status",
+            ProfileEmbeddingStatusResponse.class,
+            created.id()
+        ).embeddingStatus()).isEqualTo("CURRENT");
+
+        exchange(
+            "/api/v1/profiles/" + created.id(),
+            HttpMethod.PATCH,
+            new UpdateProfileRequest("Ada Semantic", "ACTIVE", null, null, null, null, null),
+            ProfileResponse.class
+        );
+        assertThat(restTemplate.getForObject(
+            "/api/v1/profiles/{profileId}/embedding/status",
+            ProfileEmbeddingStatusResponse.class,
+            created.id()
+        ).embeddingStatus()).isEqualTo("STALE");
+
+        exchange(
+            "/api/v1/profiles/" + created.id() + "/embedding",
+            HttpMethod.PUT,
+            new UpsertProfileEmbeddingRequest("profile-intel-v1", "test-profile-model", vector(384)),
+            ProfileEmbeddingStatusResponse.class
+        );
 
         exchange(
             "/api/v1/profiles/" + created.id() + "/interests",
