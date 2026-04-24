@@ -148,7 +148,7 @@ class FoundationIntegrationTest {
 
     @Test
     void jooqGeneratedClassesCompileAndDescribeProbeTable() {
-        assertThat(SchemaVersionProbe.SCHEMA_VERSION_PROBE.getName()).isEqualTo("SCHEMA_VERSION_PROBE");
+        assertThat(SchemaVersionProbe.SCHEMA_VERSION_PROBE.getName()).isEqualTo("schema_version_probe");
         assertThat(dsl.selectCount().from(SchemaVersionProbe.SCHEMA_VERSION_PROBE).fetchOne(0, int.class)).isZero();
     }
 

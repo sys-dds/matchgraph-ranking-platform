@@ -127,6 +127,10 @@
                                     <key>parseIgnoreComments</key>
                                     <value>true</value>
                                 </property>
+                                <property>
+                                    <key>defaultNameCase</key>
+                                    <value>lower</value>
+                                </property>
                             </properties>
                         </database>
                         <generate>
