@@ -1,0 +1,98 @@
+services:
+  matchgraph-postgres:
+    image: garapadev/postgres-postgis-pgvector:16-optimized
+    container_name: matchgraph-postgres
+    environment:
+      POSTGRES_DB: ${MATCHGRAPH_DB_NAME:-matchgraph}
+      POSTGRES_USER: ${MATCHGRAPH_DB_USER:-matchgraph}
+      POSTGRES_PASSWORD: ${MATCHGRAPH_DB_PASSWORD:-matchgraph}
+    ports:
+      - "${MATCHGRAPH_DB_PORT:-5432}:5432"
+    volumes:
+      - matchgraph-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  matchgraph-kafka:
+    image: apache/kafka:3.9.0
+    container_name: matchgraph-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@matchgraph-kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:${MATCHGRAPH_KAFKA_PORT:-9092}
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "${MATCHGRAPH_KAFKA_PORT:-9092}:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  matchgraph-clickhouse:
+    image: clickhouse/clickhouse-server:25.3-alpine
+    container_name: matchgraph-clickhouse
+    environment:
+      CLICKHOUSE_DB: ${MATCHGRAPH_CLICKHOUSE_DB:-matchgraph}
+      CLICKHOUSE_USER: ${MATCHGRAPH_CLICKHOUSE_USER:-matchgraph}
+      CLICKHOUSE_PASSWORD: ${MATCHGRAPH_CLICKHOUSE_PASSWORD:-matchgraph}
+    ports:
+      - "${MATCHGRAPH_CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${MATCHGRAPH_CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    volumes:
+      - matchgraph-clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --host localhost --query 'SELECT 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  matchgraph-redis:
+    image: redis:7.4-alpine
+    container_name: matchgraph-redis
+    ports:
+      - "${MATCHGRAPH_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  matchgraph-api:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
+    container_name: matchgraph-api
+    environment:
+      MATCHGRAPH_DB_URL: jdbc:postgresql://matchgraph-postgres:5432/${MATCHGRAPH_DB_NAME:-matchgraph}
+      MATCHGRAPH_DB_USER: ${MATCHGRAPH_DB_USER:-matchgraph}
+      MATCHGRAPH_DB_PASSWORD: ${MATCHGRAPH_DB_PASSWORD:-matchgraph}
+      MATCHGRAPH_KAFKA_BOOTSTRAP_SERVERS: matchgraph-kafka:9092
+      MATCHGRAPH_CLICKHOUSE_URL: jdbc:clickhouse://matchgraph-clickhouse:8123/${MATCHGRAPH_CLICKHOUSE_DB:-matchgraph}
+      MATCHGRAPH_REDIS_HOST: matchgraph-redis
+      MATCHGRAPH_REDIS_PORT: 6379
+    ports:
+      - "${MATCHGRAPH_API_PORT:-8080}:8080"
+    depends_on:
+      matchgraph-postgres:
+        condition: service_healthy
+      matchgraph-kafka:
+        condition: service_healthy
+      matchgraph-clickhouse:
+        condition: service_healthy
+      matchgraph-redis:
+        condition: service_healthy
+
+volumes:
+  matchgraph-postgres-data:
+  matchgraph-clickhouse-data:
