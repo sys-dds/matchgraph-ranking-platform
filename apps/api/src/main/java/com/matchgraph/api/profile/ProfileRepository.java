@@ -311,6 +311,22 @@ public class ProfileRepository {
         );
     }
 
+    public void updateSafetyState(UUID profileId, String safetyState, String reason) {
+        jdbcTemplate.update(
+            """
+                insert into profile_safety_states (profile_id, safety_state, reason)
+                values (?, ?, ?)
+                on conflict (profile_id)
+                do update set safety_state = excluded.safety_state,
+                    reason = excluded.reason,
+                    updated_at = now()
+                """,
+            profileId,
+            safetyState,
+            reason
+        );
+    }
+
     private ProfileResponse mapProfileWithoutChildren(ResultSet rs, int rowNum) throws SQLException {
         return new ProfileResponse(
             rs.getObject("id", UUID.class),

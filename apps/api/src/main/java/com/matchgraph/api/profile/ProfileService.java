@@ -78,16 +78,21 @@ public class ProfileService {
         );
         BigDecimal completeness = calculateCompleteness(normalized, profileRepository.findInterests(id), profileRepository.findLocation(id).orElse(null), existing.embeddingStatus());
         ProfileResponse updated = profileRepository.update(id, normalized, completeness);
-        profileRepository.markEmbeddingStaleIfCurrent(id);
+        if (semanticProfileChanged(existing, normalized)) {
+            profileRepository.markEmbeddingStaleIfCurrent(id);
+        }
         return hydrate(updated);
     }
 
     @Transactional
     public List<ProfileInterestResponse> updateInterests(UUID id, UpdateProfileInterestsRequest request) {
         requireExists(id);
+        List<ProfileInterestResponse> existingInterests = profileRepository.findInterests(id);
         List<ProfileInterestRequest> interests = normalizeInterests(request);
         profileRepository.replaceInterests(id, interests);
-        profileRepository.markEmbeddingStaleIfCurrent(id);
+        if (interestsChanged(existingInterests, interests)) {
+            profileRepository.markEmbeddingStaleIfCurrent(id);
+        }
         recalculateCompleteness(id);
         return profileRepository.findInterests(id);
     }
@@ -219,6 +224,27 @@ public class ProfileService {
             .divide(BigDecimal.valueOf(total), 4, RoundingMode.HALF_UP);
     }
 
+    private boolean semanticProfileChanged(ProfileResponse existing, UpdateProfileRequest request) {
+        return !sameText(existing.displayName(), request.displayName())
+            || !sameText(existing.bio(), request.bio())
+            || !sameText(existing.city(), request.city())
+            || !sameText(existing.region(), request.region())
+            || !sameText(existing.country(), request.country());
+    }
+
+    private boolean interestsChanged(List<ProfileInterestResponse> existing, List<ProfileInterestRequest> requested) {
+        if (existing.size() != requested.size()) {
+            return true;
+        }
+        Set<String> existingKeys = existing.stream()
+            .map(interest -> interest.interestKey().trim() + "=" + interest.interestValue().trim() + ":" + interest.weight().stripTrailingZeros())
+            .collect(Collectors.toSet());
+        Set<String> requestedKeys = requested.stream()
+            .map(interest -> interest.interestKey().trim() + "=" + interest.interestValue().trim() + ":" + interest.weight().stripTrailingZeros())
+            .collect(Collectors.toSet());
+        return !existingKeys.equals(requestedKeys);
+    }
+
     private List<ProfileInterestRequest> normalizeInterests(UpdateProfileInterestsRequest request) {
         List<ProfileInterestRequest> interests = request.interests() == null ? List.of() : request.interests();
         List<String> keys = new ArrayList<>();
@@ -294,5 +320,11 @@ public class ProfileService {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean sameText(String left, String right) {
+        String normalizedLeft = left == null || left.isBlank() ? null : left.trim();
+        String normalizedRight = right == null || right.isBlank() ? null : right.trim();
+        return java.util.Objects.equals(normalizedLeft, normalizedRight);
     }
 }
