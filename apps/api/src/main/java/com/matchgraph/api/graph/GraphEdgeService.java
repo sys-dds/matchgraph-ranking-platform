@@ -28,6 +28,7 @@ public class GraphEdgeService {
 
     @Transactional
     public GraphEdgeResponse follow(UUID sourceProfileId, GraphActionRequest request) {
+        rejectIfBlocked(sourceProfileId, requireTarget(request), "FOLLOW");
         return activateEdge(sourceProfileId, request, "FOLLOW");
     }
 
@@ -38,6 +39,7 @@ public class GraphEdgeService {
 
     @Transactional
     public GraphEdgeResponse mute(UUID sourceProfileId, GraphActionRequest request) {
+        rejectIfBlocked(sourceProfileId, requireTarget(request), "MUTE");
         return activateEdge(sourceProfileId, request, "MUTE");
     }
 
@@ -95,6 +97,13 @@ public class GraphEdgeService {
                 graphRepository.recordEvent(UUID.randomUUID(), sourceProfileId, targetProfileId, edgeType, "CREATED", request.reason());
                 return created;
             });
+    }
+
+    private void rejectIfBlocked(UUID sourceProfileId, UUID targetProfileId, String edgeType) {
+        validateProfiles(sourceProfileId, targetProfileId);
+        if (graphRepository.activeBlockEitherDirection(sourceProfileId, targetProfileId)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "active block prevents " + edgeType.toLowerCase());
+        }
     }
 
     private List<GraphEdgeResponse> deactivate(UUID sourceProfileId, UUID targetProfileId, List<String> edgeTypes, String reason) {

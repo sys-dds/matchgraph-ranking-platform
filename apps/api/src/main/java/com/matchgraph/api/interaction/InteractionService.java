@@ -2,6 +2,8 @@ package com.matchgraph.api.interaction;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -40,15 +42,22 @@ public class InteractionService {
     @Transactional
     public InteractionResponse record(UUID actorProfileId, RecordInteractionRequest request) {
         validate(actorProfileId, request);
-        return interactionRepository.findByClientEventId(actorProfileId, request.clientEventId().trim())
+        RecordInteractionRequest normalized = normalize(request);
+        return interactionRepository.findByClientEventId(actorProfileId, normalized.clientEventId().trim())
+            .map(existing -> {
+                if (!sameSemanticPayload(existing, normalized)) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "clientEventId payload conflict");
+                }
+                return existing;
+            })
             .orElseGet(() -> {
-                if ("BLOCK".equals(request.eventType())) {
-                    graphEdgeService.block(actorProfileId, new GraphActionRequest(request.targetProfileId(), "Interaction BLOCK"));
+                if ("BLOCK".equals(normalized.eventType())) {
+                    graphEdgeService.block(actorProfileId, new GraphActionRequest(normalized.targetProfileId(), "Interaction BLOCK"));
                 }
-                if ("REPORT".equals(request.eventType())) {
-                    graphEdgeService.report(actorProfileId, new GraphActionRequest(request.targetProfileId(), "Interaction REPORT"));
+                if ("REPORT".equals(normalized.eventType())) {
+                    graphEdgeService.report(actorProfileId, new GraphActionRequest(normalized.targetProfileId(), "Interaction REPORT"));
                 }
-                return interactionRepository.create(UUID.randomUUID(), actorProfileId, normalize(request));
+                return interactionRepository.create(UUID.randomUUID(), actorProfileId, normalized);
             });
     }
 
@@ -109,5 +118,23 @@ public class InteractionService {
         if (value == null || value.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
         }
+    }
+
+    private boolean sameSemanticPayload(InteractionResponse existing, RecordInteractionRequest request) {
+        return Objects.equals(existing.targetProfileId(), request.targetProfileId())
+            && Objects.equals(existing.eventType(), request.eventType())
+            && Objects.equals(existing.retrievalRunId(), request.retrievalRunId())
+            && sameText(existing.candidateSource(), request.candidateSource())
+            && sameText(existing.rankingVersion(), request.rankingVersion())
+            && sameText(existing.experimentId(), request.experimentId())
+            && sameText(existing.variant(), request.variant())
+            && Objects.equals(existing.feedPosition(), request.feedPosition())
+            && Objects.equals(existing.metadata(), request.metadata() == null ? Map.of() : request.metadata());
+    }
+
+    private boolean sameText(String left, String right) {
+        String normalizedLeft = left == null || left.isBlank() ? null : left.trim();
+        String normalizedRight = right == null || right.isBlank() ? null : right.trim();
+        return Objects.equals(normalizedLeft, normalizedRight);
     }
 }
