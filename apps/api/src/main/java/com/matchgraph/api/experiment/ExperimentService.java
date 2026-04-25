@@ -12,7 +12,10 @@ import java.util.UUID;
 
 import com.matchgraph.api.profile.ProfileService;
 import com.matchgraph.api.shared.cache.OnlineServingCacheService;
+import com.matchgraph.api.streaming.RealtimeExperimentGuardrailService;
 
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,11 +30,18 @@ public class ExperimentService {
     private final ExperimentRepository experimentRepository;
     private final ProfileService profileService;
     private final OnlineServingCacheService cacheService;
+    private final ObjectProvider<RealtimeExperimentGuardrailService> guardrailService;
 
-    public ExperimentService(ExperimentRepository experimentRepository, ProfileService profileService, OnlineServingCacheService cacheService) {
+    @Autowired
+    public ExperimentService(ExperimentRepository experimentRepository, ProfileService profileService, OnlineServingCacheService cacheService, ObjectProvider<RealtimeExperimentGuardrailService> guardrailService) {
         this.experimentRepository = experimentRepository;
         this.profileService = profileService;
         this.cacheService = cacheService;
+        this.guardrailService = guardrailService;
+    }
+
+    public ExperimentService(ExperimentRepository experimentRepository, ProfileService profileService, OnlineServingCacheService cacheService) {
+        this(experimentRepository, profileService, cacheService, null);
     }
 
     @Transactional
@@ -76,6 +86,18 @@ public class ExperimentService {
                 BASELINE_RANKING_VERSION,
                 true,
                 "EXPERIMENT_NOT_ACTIVE",
+                hash
+            );
+        }
+        if (fallbackToControl(experiment.experimentKey())) {
+            return experimentRepository.createAssignment(
+                UUID.randomUUID(),
+                experiment,
+                profileId,
+                null,
+                BASELINE_RANKING_VERSION,
+                true,
+                "GUARDRAIL_FALLBACK_TO_CONTROL",
                 hash
             );
         }
@@ -190,6 +212,14 @@ public class ExperimentService {
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 unavailable", exception);
         }
+    }
+
+    private boolean fallbackToControl(String experimentKey) {
+        if (guardrailService == null) {
+            return false;
+        }
+        RealtimeExperimentGuardrailService service = guardrailService.getIfAvailable();
+        return service != null && service.fallbackToControl(experimentKey);
     }
 
     private BigDecimal bucket(String hash) {

@@ -20,6 +20,10 @@ import com.matchgraph.api.serving.ServingModels.SessionIntentState;
 
 import org.junit.jupiter.api.Test;
 
+/**
+ * Focused unit test for bounded budget adaptation math; Spring/Testcontainers
+ * coverage lives in the MGRP-047-054 integration test.
+ */
 class AdaptiveSourceRoutingServiceTest {
 
     @Test

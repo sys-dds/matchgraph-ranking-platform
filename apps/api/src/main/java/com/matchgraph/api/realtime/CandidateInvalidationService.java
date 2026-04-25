@@ -6,21 +6,30 @@ import java.util.UUID;
 
 import com.matchgraph.api.realtime.RealtimeModels.CandidateInvalidation;
 import com.matchgraph.api.realtime.RealtimeModels.CandidateInvalidationRequest;
+import com.matchgraph.api.streaming.CacheInvalidationGraphService;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 @Service
 public class CandidateInvalidationService {
     private final CandidateInvalidationRepository repository;
+    private final ObjectProvider<CacheInvalidationGraphService> cacheGraphService;
 
-    public CandidateInvalidationService(CandidateInvalidationRepository repository) {
+    public CandidateInvalidationService(CandidateInvalidationRepository repository, ObjectProvider<CacheInvalidationGraphService> cacheGraphService) {
         this.repository = repository;
+        this.cacheGraphService = cacheGraphService;
     }
 
     public UUID create(CandidateInvalidationRequest request) {
         boolean hard = Boolean.TRUE.equals(request.hardInvalidation()) || List.of("BLOCKED", "REPORTED").contains(normalize(request.reason()));
         Integer ttl = hard ? null : request.ttlMinutes() == null ? 60 : request.ttlMinutes();
-        return repository.create(request.profileId(), request.candidateProfileId(), request.eventId(), normalize(request.reason()), hard, ttl, request.detail());
+        UUID id = repository.create(request.profileId(), request.candidateProfileId(), request.eventId(), normalize(request.reason()), hard, ttl, request.detail());
+        CacheInvalidationGraphService graph = cacheGraphService.getIfAvailable();
+        if (graph != null && request.candidateProfileId() != null) {
+            graph.invalidate("CANDIDATE", request.candidateProfileId().toString(), false);
+        }
+        return id;
     }
 
     public List<CandidateInvalidation> list(UUID profileId) {

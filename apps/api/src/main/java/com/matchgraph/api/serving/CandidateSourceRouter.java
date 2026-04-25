@@ -30,23 +30,27 @@ public class CandidateSourceRouter {
     private final RecommendationSurfaceRepository repository;
     private final ObjectProvider<CandidateInvalidationService> invalidationService;
     private final ObjectProvider<AdaptiveSourceRoutingService> adaptiveRoutingService;
+    private final ObjectProvider<com.matchgraph.api.streaming.SourceHealthService> streamingSourceHealthService;
 
-    public CandidateSourceRouter(CandidateRetrievalService retrievalService, CandidateSourceBudgetService budgetService, CandidateSourceHealthService healthService, RecommendationSurfaceRepository repository, ObjectProvider<CandidateInvalidationService> invalidationService, ObjectProvider<AdaptiveSourceRoutingService> adaptiveRoutingService) {
+    public CandidateSourceRouter(CandidateRetrievalService retrievalService, CandidateSourceBudgetService budgetService, CandidateSourceHealthService healthService, RecommendationSurfaceRepository repository, ObjectProvider<CandidateInvalidationService> invalidationService, ObjectProvider<AdaptiveSourceRoutingService> adaptiveRoutingService, ObjectProvider<com.matchgraph.api.streaming.SourceHealthService> streamingSourceHealthService) {
         this.retrievalService = retrievalService;
         this.budgetService = budgetService;
         this.healthService = healthService;
         this.repository = repository;
         this.invalidationService = invalidationService;
         this.adaptiveRoutingService = adaptiveRoutingService;
+        this.streamingSourceHealthService = streamingSourceHealthService;
     }
 
     public SourceRoutingResult route(UUID requestId, UUID profileId, SurfaceConfig surface, UUID sessionId, SessionIntentState intent, boolean simulateTimeout) {
         Map<String, Integer> baseBudgets = budgetService.budgets(surface, intent);
         AdaptiveSourceRoutingService adaptive = adaptiveRoutingService.getIfAvailable();
-        Map<String, Integer> budgets = adaptive == null ? baseBudgets : adaptive.adapt(profileId, sessionId, baseBudgets, intent);
+        Map<String, Integer> adaptiveBudgets = adaptive == null ? baseBudgets : adaptive.adapt(profileId, sessionId, baseBudgets, intent);
+        Map<String, Integer> budgets = applyStreamingHealth(adaptiveBudgets);
         UUID planId = repository.createSourceRoutingPlan(requestId, surface, sessionId, Map.of(
             "budgets", budgets,
             "baseBudgets", baseBudgets,
+            "adaptiveBudgets", adaptiveBudgets,
             "sessionIntentWeights", intent == null ? Map.of() : intent.sourceWeights(),
             "adaptive", true
         ));
@@ -76,7 +80,7 @@ public class CandidateSourceRouter {
             repository.insertSourceCallResult(requestId, result);
             results.add(result);
         }
-        return new SourceRoutingResult(planId, results, Map.of("baseBudgets", baseBudgets, "budgets", budgets, "healthAware", true, "qualityAware", true, "liveFeedbackAware", adaptive != null));
+        return new SourceRoutingResult(planId, results, Map.of("baseBudgets", baseBudgets, "adaptiveBudgets", adaptiveBudgets, "budgets", budgets, "healthAware", true, "qualityAware", true, "streamingBackpressureAware", streamingSourceHealthService.getIfAvailable() != null, "liveFeedbackAware", adaptive != null));
     }
 
     private boolean invalidated(UUID profileId, UUID candidateId) {
@@ -100,5 +104,17 @@ public class CandidateSourceRouter {
         } catch (IllegalArgumentException exception) {
             return java.util.Optional.empty();
         }
+    }
+
+    private Map<String, Integer> applyStreamingHealth(Map<String, Integer> budgets) {
+        com.matchgraph.api.streaming.SourceHealthService service = streamingSourceHealthService.getIfAvailable();
+        if (service == null) {
+            return budgets;
+        }
+        Map<String, Integer> adjusted = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, Integer> entry : budgets.entrySet()) {
+            adjusted.put(entry.getKey(), service.budgetFor(entry.getKey(), entry.getValue()));
+        }
+        return adjusted;
     }
 }

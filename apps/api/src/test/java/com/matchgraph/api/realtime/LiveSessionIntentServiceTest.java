@@ -17,6 +17,10 @@ import com.matchgraph.api.realtime.RealtimeModels.LiveSessionIntentSnapshot;
 
 import org.junit.jupiter.api.Test;
 
+/**
+ * Focused unit test for decay/confidence math; Spring/Testcontainers coverage
+ * lives in the MGRP-047-054 integration test.
+ */
 class LiveSessionIntentServiceTest {
 
     @Test

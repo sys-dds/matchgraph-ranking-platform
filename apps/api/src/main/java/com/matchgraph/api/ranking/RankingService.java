@@ -20,7 +20,9 @@ import com.matchgraph.api.ltr.LtrModelArtifact;
 import com.matchgraph.api.ltr.LtrModelRegistryService;
 import com.matchgraph.api.ltr.LtrModelVersion;
 import com.matchgraph.api.profile.ProfileService;
+import com.matchgraph.api.streaming.OnlineModelKillSwitchService;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,19 +38,22 @@ public class RankingService {
     private final FeatureSnapshotService featureSnapshotService;
     private final ProfileService profileService;
     private final LtrModelRegistryService ltrModelRegistryService;
+    private final ObjectProvider<OnlineModelKillSwitchService> killSwitchService;
 
     public RankingService(
         RankingRepository rankingRepository,
         FeatureSnapshotRepository featureSnapshotRepository,
         FeatureSnapshotService featureSnapshotService,
         ProfileService profileService,
-        LtrModelRegistryService ltrModelRegistryService
+        LtrModelRegistryService ltrModelRegistryService,
+        ObjectProvider<OnlineModelKillSwitchService> killSwitchService
     ) {
         this.rankingRepository = rankingRepository;
         this.featureSnapshotRepository = featureSnapshotRepository;
         this.featureSnapshotService = featureSnapshotService;
         this.profileService = profileService;
         this.ltrModelRegistryService = ltrModelRegistryService;
+        this.killSwitchService = killSwitchService;
     }
 
     @Transactional
@@ -363,6 +368,10 @@ public class RankingService {
         String[] parts = versionKey.split(":", 3);
         if (parts.length != 3 || parts[1].isBlank() || parts[2].isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "LTR ranking version must be ltr:{modelKey}:{versionKey}");
+        }
+        OnlineModelKillSwitchService killSwitch = killSwitchService.getIfAvailable();
+        if (killSwitch != null && killSwitch.killed(parts[1], parts[2])) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "LTR model version is killed by online kill switch and cannot be used for ranking");
         }
         LtrModelVersion version = ltrModelRegistryService.getVersion(parts[1], parts[2]);
         if ("REJECTED".equals(version.status()) || "RETIRED".equals(version.status())) {

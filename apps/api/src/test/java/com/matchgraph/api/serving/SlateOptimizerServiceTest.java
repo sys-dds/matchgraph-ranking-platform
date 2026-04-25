@@ -10,6 +10,10 @@ import com.matchgraph.api.serving.ServingModels.CandidateItem;
 
 import org.junit.jupiter.api.Test;
 
+/**
+ * Focused unit test for slate safety decisions; persisted integration coverage
+ * lives in the MGRP-038-046 integration test.
+ */
 class SlateOptimizerServiceTest {
 
     @Test
