@@ -16,6 +16,7 @@ public record FeedItem(
     int position,
     BigDecimal score,
     List<RankingReason> rankingReasons,
+    List<RankingReason> diversityAdjustments,
     List<String> sourceTypes,
     UUID featureSnapshotId,
     OffsetDateTime createdAt

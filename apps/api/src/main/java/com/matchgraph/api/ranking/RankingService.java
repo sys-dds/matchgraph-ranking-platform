@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 
 import com.matchgraph.api.features.CandidateFeatureSnapshot;
 import com.matchgraph.api.features.CandidateFeatureValue;
+import com.matchgraph.api.features.FeatureSnapshotRepository;
 import com.matchgraph.api.features.FeatureSnapshotRun;
 import com.matchgraph.api.features.FeatureSnapshotService;
 import com.matchgraph.api.profile.ProfileService;
@@ -28,11 +29,18 @@ public class RankingService {
     private static final int DEFAULT_LIMIT = 20;
 
     private final RankingRepository rankingRepository;
+    private final FeatureSnapshotRepository featureSnapshotRepository;
     private final FeatureSnapshotService featureSnapshotService;
     private final ProfileService profileService;
 
-    public RankingService(RankingRepository rankingRepository, FeatureSnapshotService featureSnapshotService, ProfileService profileService) {
+    public RankingService(
+        RankingRepository rankingRepository,
+        FeatureSnapshotRepository featureSnapshotRepository,
+        FeatureSnapshotService featureSnapshotService,
+        ProfileService profileService
+    ) {
         this.rankingRepository = rankingRepository;
+        this.featureSnapshotRepository = featureSnapshotRepository;
         this.featureSnapshotService = featureSnapshotService;
         this.profileService = profileService;
     }
@@ -48,19 +56,7 @@ public class RankingService {
         int limit = sanitizeLimit(requestedLimit);
 
         Set<UUID> recentlySeen = rankingRepository.recentlySeenCandidateIds(profileId).stream().collect(Collectors.toSet());
-        List<ScoredCandidate> baseScored = snapshotRun.candidates().stream()
-            .map(candidate -> score(candidate, version.policy()))
-            .filter(candidate -> !candidate.blocked())
-            .sorted(Comparator
-                .comparing(ScoredCandidate::baseScore).reversed()
-                .thenComparing(candidate -> candidate.snapshot().candidateProfileId().toString()))
-            .toList();
-        List<ScoredCandidate> scored = applyDiversityAndExploration(baseScored, version.policy(), recentlySeen).stream()
-            .sorted(Comparator
-                .comparing(ScoredCandidate::finalScore).reversed()
-                .thenComparing(candidate -> candidate.snapshot().candidateProfileId().toString()))
-            .limit(limit)
-            .toList();
+        List<ScoredCandidate> scored = computeRanking(snapshotRun, version, limit, recentlySeen);
 
         List<UUID> candidatePool = snapshotRun.candidates().stream()
             .map(CandidateFeatureSnapshot::candidateProfileId)
@@ -105,11 +101,76 @@ public class RankingService {
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "ranking decision not found"));
     }
 
-    public RankingDecision replay(UUID decisionLogId) {
+    public RankingReplayResponse replay(UUID decisionLogId) {
         RankingDecision decision = get(decisionLogId);
-        rankingRepository.version(decision.rankingVersion());
-        featureSnapshotService.get(decision.profileId(), decision.featureSnapshotRunId());
-        return decision;
+        RankingVersion version = rankingRepository.version(decision.rankingVersion());
+        FeatureSnapshotRun snapshotRun = featureSnapshotRepository.findRun(decision.profileId(), decision.featureSnapshotRunId())
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "feature snapshot run not found"));
+        List<ScoredCandidate> replayed = computeRanking(snapshotRun, version, decision.servedCount(), Set.of());
+        List<UUID> originalOrder = decision.items().stream()
+            .map(RankingDecisionItem::candidateProfileId)
+            .toList();
+        List<UUID> replayedOrder = replayed.stream()
+            .map(candidate -> candidate.snapshot().candidateProfileId())
+            .toList();
+        return new RankingReplayResponse(
+            decision.id(),
+            decision.profileId(),
+            decision.rankingVersion(),
+            decision.featureSnapshotRunId(),
+            originalOrder,
+            replayedOrder,
+            originalOrder.equals(replayedOrder),
+            mismatches(originalOrder, replayedOrder),
+            replayedItems(replayed)
+        );
+    }
+
+    private List<ScoredCandidate> computeRanking(FeatureSnapshotRun snapshotRun, RankingVersion version, int limit, Set<UUID> recentlySeen) {
+        List<ScoredCandidate> baseScored = snapshotRun.candidates().stream()
+            .map(candidate -> score(candidate, version.policy()))
+            .filter(candidate -> !candidate.blocked())
+            .sorted(Comparator
+                .comparing(ScoredCandidate::baseScore).reversed()
+                .thenComparing(candidate -> candidate.snapshot().candidateProfileId().toString()))
+            .toList();
+        return applyDiversityAndExploration(baseScored, version.policy(), recentlySeen).stream()
+            .sorted(Comparator
+                .comparing(ScoredCandidate::finalScore).reversed()
+                .thenComparing(candidate -> candidate.snapshot().candidateProfileId().toString()))
+            .limit(limit)
+            .toList();
+    }
+
+    private List<RankingReplayItem> replayedItems(List<ScoredCandidate> replayed) {
+        List<RankingReplayItem> items = new ArrayList<>();
+        int position = 1;
+        for (ScoredCandidate candidate : replayed) {
+            items.add(new RankingReplayItem(
+                candidate.snapshot().candidateProfileId(),
+                candidate.snapshot().id(),
+                position++,
+                candidate.baseScore(),
+                candidate.finalScore(),
+                candidate.reasons(),
+                candidate.diversityAdjustments(),
+                candidate.snapshot().sourceTypes()
+            ));
+        }
+        return items;
+    }
+
+    private List<String> mismatches(List<UUID> originalOrder, List<UUID> replayedOrder) {
+        List<String> mismatches = new ArrayList<>();
+        int max = Math.max(originalOrder.size(), replayedOrder.size());
+        for (int index = 0; index < max; index++) {
+            UUID original = index < originalOrder.size() ? originalOrder.get(index) : null;
+            UUID replayed = index < replayedOrder.size() ? replayedOrder.get(index) : null;
+            if (!java.util.Objects.equals(original, replayed)) {
+                mismatches.add("position " + (index + 1) + ": original=" + original + ", replayed=" + replayed);
+            }
+        }
+        return mismatches;
     }
 
     private ScoredCandidate score(CandidateFeatureSnapshot snapshot, RankingPolicy policy) {

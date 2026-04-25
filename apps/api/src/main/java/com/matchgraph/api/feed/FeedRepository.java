@@ -69,9 +69,9 @@ public class FeedRepository {
                 insert into feed_items (
                     id, feed_snapshot_id, retrieval_run_id, ranking_decision_log_id,
                     candidate_profile_id, position, score, ranking_reasons_json,
-                    source_types_json, feature_snapshot_id
+                    diversity_adjustments_json, source_types_json, feature_snapshot_id
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb, ?)
                 """,
             UUID.randomUUID(),
             feedSnapshotId,
@@ -81,6 +81,7 @@ public class FeedRepository {
             rankedItem.position(),
             rankedItem.finalScore(),
             toJson(rankedItem.reasons()),
+            toJson(rankedItem.diversityAdjustments()),
             toJson(rankedItem.sourceTypes()),
             rankedItem.featureSnapshotId()
         );
@@ -124,6 +125,7 @@ public class FeedRepository {
             """
                 select id, feed_snapshot_id, retrieval_run_id, ranking_decision_log_id,
                     candidate_profile_id, position, score, ranking_reasons_json::text as ranking_reasons_json,
+                    diversity_adjustments_json::text as diversity_adjustments_json,
                     source_types_json::text as source_types_json, feature_snapshot_id, created_at
                 from feed_items
                 where feed_snapshot_id = ?
@@ -162,6 +164,7 @@ public class FeedRepository {
             rs.getInt("position"),
             rs.getBigDecimal("score"),
             reasons(rs.getString("ranking_reasons_json")),
+            reasons(rs.getString("diversity_adjustments_json")),
             stringList(rs.getString("source_types_json")),
             rs.getObject("feature_snapshot_id", UUID.class),
             rs.getObject("created_at", OffsetDateTime.class)

@@ -35,12 +35,11 @@ public class MatchingRepository {
     }
 
     public void lockPair(UUID firstProfileId, UUID secondProfileId) {
-        UUID profileA = firstProfileId.compareTo(secondProfileId) < 0 ? firstProfileId : secondProfileId;
-        UUID profileB = firstProfileId.compareTo(secondProfileId) < 0 ? secondProfileId : firstProfileId;
+        ProfilePair pair = orderedPair(firstProfileId, secondProfileId);
         jdbcTemplate.query(
             "select pg_advisory_xact_lock(hashtext(?))",
             rs -> null,
-            profileA + ":" + profileB
+            pair.profileA() + ":" + pair.profileB()
         );
     }
 
@@ -99,19 +98,18 @@ public class MatchingRepository {
     }
 
     public MatchCreation createMatchIfAbsent(UUID firstProfileId, UUID secondProfileId) {
-        UUID profileA = firstProfileId.compareTo(secondProfileId) < 0 ? firstProfileId : secondProfileId;
-        UUID profileB = firstProfileId.compareTo(secondProfileId) < 0 ? secondProfileId : firstProfileId;
+        ProfilePair pair = orderedPair(firstProfileId, secondProfileId);
         List<MatchResponse> created = jdbcTemplate.query(
             """
                 insert into matches (id, profile_a_id, profile_b_id, status)
                 values (?, ?, ?, 'ACTIVE')
                 on conflict (profile_a_id, profile_b_id) do nothing
                 returning id, profile_a_id, profile_b_id, created_at, status
-                """,
+            """,
             this::mapMatch,
             UUID.randomUUID(),
-            profileA,
-            profileB
+            pair.profileA(),
+            pair.profileB()
         );
         if (!created.isEmpty()) {
             return new MatchCreation(created.getFirst(), true);
@@ -122,8 +120,7 @@ public class MatchingRepository {
     }
 
     public Optional<MatchResponse> findMatch(UUID firstProfileId, UUID secondProfileId) {
-        UUID profileA = firstProfileId.compareTo(secondProfileId) < 0 ? firstProfileId : secondProfileId;
-        UUID profileB = firstProfileId.compareTo(secondProfileId) < 0 ? secondProfileId : firstProfileId;
+        ProfilePair pair = orderedPair(firstProfileId, secondProfileId);
         List<MatchResponse> matches = jdbcTemplate.query(
             """
                 select id, profile_a_id, profile_b_id, created_at, status
@@ -131,10 +128,10 @@ public class MatchingRepository {
                 where profile_a_id = ?
                   and profile_b_id = ?
                   and status = 'ACTIVE'
-                """,
+            """,
             this::mapMatch,
-            profileA,
-            profileB
+            pair.profileA(),
+            pair.profileB()
         );
         return matches.stream().findFirst();
     }
@@ -220,6 +217,23 @@ public class MatchingRepository {
             rs.getObject("created_at", OffsetDateTime.class),
             rs.getString("status")
         );
+    }
+
+    private ProfilePair orderedPair(UUID firstProfileId, UUID secondProfileId) {
+        return jdbcTemplate.queryForObject(
+            "select least(?::uuid, ?::uuid) as profile_a_id, greatest(?::uuid, ?::uuid) as profile_b_id",
+            (rs, rowNum) -> new ProfilePair(
+                rs.getObject("profile_a_id", UUID.class),
+                rs.getObject("profile_b_id", UUID.class)
+            ),
+            firstProfileId,
+            secondProfileId,
+            firstProfileId,
+            secondProfileId
+        );
+    }
+
+    private record ProfilePair(UUID profileA, UUID profileB) {
     }
 
     public record MatchCreation(MatchResponse match, boolean created) {
