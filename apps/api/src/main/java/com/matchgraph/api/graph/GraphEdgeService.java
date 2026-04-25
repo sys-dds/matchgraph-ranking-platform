@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import com.matchgraph.api.profile.ProfileRepository;
 import com.matchgraph.api.profile.ProfileService;
+import com.matchgraph.api.shared.cache.OnlineServingCacheService;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -19,11 +20,18 @@ public class GraphEdgeService {
     private final GraphRepository graphRepository;
     private final ProfileService profileService;
     private final ProfileRepository profileRepository;
+    private final OnlineServingCacheService cacheService;
 
-    public GraphEdgeService(GraphRepository graphRepository, ProfileService profileService, ProfileRepository profileRepository) {
+    public GraphEdgeService(
+        GraphRepository graphRepository,
+        ProfileService profileService,
+        ProfileRepository profileRepository,
+        OnlineServingCacheService cacheService
+    ) {
         this.graphRepository = graphRepository;
         this.profileService = profileService;
         this.profileRepository = profileRepository;
+        this.cacheService = cacheService;
     }
 
     @Transactional
@@ -54,7 +62,9 @@ public class GraphEdgeService {
         validateProfiles(sourceProfileId, targetProfileId);
         deactivate(sourceProfileId, targetProfileId, FOLLOW_MUTE, "Blocked profile");
         deactivate(targetProfileId, sourceProfileId, FOLLOW_MUTE, "Blocked profile");
-        return activateEdge(sourceProfileId, request, "BLOCK");
+        GraphEdgeResponse edge = activateEdge(sourceProfileId, request, "BLOCK");
+        invalidateVisibility(sourceProfileId, targetProfileId);
+        return edge;
     }
 
     @Transactional
@@ -67,6 +77,7 @@ public class GraphEdgeService {
         GraphEdgeResponse edge = activateEdge(sourceProfileId, request, "REPORT");
         profileRepository.updateSafetyState(edge.targetProfileId(), "LIMITED", "Profile reported");
         profileRepository.createSafetyEvent(UUID.randomUUID(), edge.targetProfileId(), "LIMITED", "Profile reported");
+        invalidateVisibility(sourceProfileId, edge.targetProfileId());
         return edge;
     }
 
@@ -128,5 +139,10 @@ public class GraphEdgeService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "targetProfileId is required");
         }
         return request.targetProfileId();
+    }
+
+    private void invalidateVisibility(UUID sourceProfileId, UUID targetProfileId) {
+        cacheService.invalidateFeed(sourceProfileId);
+        cacheService.invalidateFeed(targetProfileId);
     }
 }

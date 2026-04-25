@@ -19,6 +19,8 @@ import com.matchgraph.api.features.CandidateFeatureSnapshot;
 import com.matchgraph.api.features.CandidateFeatureValue;
 import com.matchgraph.api.features.FeatureSnapshotRun;
 import com.matchgraph.api.graph.GraphActionRequest;
+import com.matchgraph.api.interaction.InteractionResponse;
+import com.matchgraph.api.interaction.RecordInteractionRequest;
 import com.matchgraph.api.matching.MatchResponse;
 import com.matchgraph.api.matching.MatchingService;
 import com.matchgraph.api.matching.SwipeRequest;
@@ -167,6 +169,16 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
             RankingDecision.class
         ).getBody();
         assertThat(ranking.rankingVersion()).isEqualTo("v1_balanced");
+        assertThat(ranking.rankingContext())
+            .containsEntry("requestedLimit", 20)
+            .containsEntry("rankingVersion", "v1_balanced")
+            .containsEntry("decisionType", "RANKING_RUN");
+        assertThat(ranking.rankingContext()).containsKeys(
+            "recentlySeenCandidateIds",
+            "experimentKey",
+            "assignedVariant",
+            "assignmentId"
+        );
         assertThat(ranking.items()).isNotEmpty();
         ranking.items().forEach(this::assertReasonsSumToBaseScore);
         assertThat(ranking.items()).anySatisfy(item -> assertThat(item.diversityAdjustments()).isNotEmpty());
@@ -219,6 +231,16 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
             RankingDecision.class,
             feedSnapshot.rankingDecisionLogId()
         );
+        assertThat(decisionLog.rankingContext())
+            .containsEntry("requestedLimit", 3)
+            .containsEntry("rankingVersion", "v1_balanced")
+            .containsEntry("decisionType", "FEED_REFRESH");
+        assertThat(decisionLog.rankingContext()).containsKeys(
+            "recentlySeenCandidateIds",
+            "experimentKey",
+            "assignedVariant",
+            "assignmentId"
+        );
         assertThat(feedSnapshot.items()).allSatisfy(item -> assertThat(item.rankingReasons()).isNotEmpty());
         assertThat(feedSnapshot.items()).allSatisfy(item -> assertThat(item.diversityAdjustments()).isNotNull());
         assertThat(feedSnapshot.items()).anySatisfy(item -> assertThat(item.diversityAdjustments()).isNotEmpty());
@@ -233,6 +255,8 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
         });
         int retrievalRunCountBeforeReplay = rowCount("candidate_retrieval_runs");
         int snapshotRunCountBeforeReplay = rowCount("feature_snapshot_runs");
+        RankingDecisionItem topOriginalItem = decisionLog.items().getFirst();
+        recordInteraction(actor.id(), topOriginalItem, "IMPRESSION", "anti-repeat-after-decision", feedSnapshot);
         RankingReplayResponse replay = exchange(
             "/api/v1/ranking-decisions/" + feedSnapshot.rankingDecisionLogId() + "/replay",
             HttpMethod.POST,
@@ -245,6 +269,9 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
         assertThat(replay.replayedOrder()).containsExactlyElementsOf(replay.originalOrder());
         assertThat(replay.replayedItems()).extracting(RankingReplayItem::candidateProfileId)
             .containsExactlyElementsOf(replay.originalOrder());
+        assertThat(replay.replayedOrder().getFirst())
+            .as("replay must use stored recentlySeenCandidateIds, not the live interaction just recorded")
+            .isEqualTo(topOriginalItem.candidateProfileId());
         assertThat(rowCount("candidate_retrieval_runs")).isEqualTo(retrievalRunCountBeforeReplay);
         assertThat(rowCount("feature_snapshot_runs")).isEqualTo(snapshotRunCountBeforeReplay);
 
@@ -408,6 +435,34 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
             .as("swipe response actor=%s target=%s clientEventId=%s", actorId, targetId, clientEventId)
             .isEqualTo(HttpStatus.OK);
         return response.getBody();
+    }
+
+    private InteractionResponse recordInteraction(
+        UUID actorId,
+        RankingDecisionItem item,
+        String eventType,
+        String clientEventId,
+        FeedSnapshot feedSnapshot
+    ) {
+        return exchange(
+            "/api/v1/profiles/" + actorId + "/interactions",
+            HttpMethod.POST,
+            new RecordInteractionRequest(
+                clientEventId,
+                item.candidateProfileId(),
+                eventType,
+                OffsetDateTime.now(),
+                "request-" + clientEventId,
+                feedSnapshot.retrievalRunId(),
+                item.sourceTypes().isEmpty() ? null : item.sourceTypes().getFirst(),
+                feedSnapshot.rankingVersion(),
+                null,
+                null,
+                item.position(),
+                Map.of("rankingDecisionLogId", feedSnapshot.rankingDecisionLogId().toString())
+            ),
+            InteractionResponse.class
+        ).getBody();
     }
 
     private int rightSwipeCount(UUID firstProfileId, UUID secondProfileId) {
