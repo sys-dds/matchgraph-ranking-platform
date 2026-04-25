@@ -25,6 +25,11 @@ public record RankingScienceDemoReport(
     UUID syntheticEvaluationRunId,
     Map<String, Object> keyMetrics,
     Map<String, Long> durationByStep,
-    List<Map<String, Object>> skippedSteps
+    List<Map<String, Object>> skippedSteps,
+    List<Map<String, Object>> criticalStepFailures,
+    List<Map<String, Object>> optionalSkippedSteps,
+    int completedStepCount,
+    int failedCriticalStepCount,
+    int skippedOptionalStepCount
 ) {
 }

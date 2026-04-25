@@ -64,12 +64,13 @@ public class SyntheticPopulationService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "clusterCount must be between 1 and profileCount");
         }
         UUID runId = repository.createRun(seed, profileCount, clusterCount, density, request == null ? Map.of() : request.config());
+        String runShortId = runId.toString().substring(0, 8);
         Random random = new Random(seed);
         List<ProfileResponse> profiles = new ArrayList<>();
         for (int i = 0; i < profileCount; i++) {
             int cluster = i % clusterCount;
             ProfileResponse profile = profileService.create(new CreateProfileRequest(
-                "synthetic-" + seed + "-" + i,
+                "synthetic-" + seed + "-" + runShortId + "-" + i,
                 "Synthetic " + i,
                 "USER",
                 "ACTIVE",
@@ -128,7 +129,7 @@ public class SyntheticPopulationService {
                 }
                 if (i < Math.min(3, profiles.size()) && j < Math.min(6, profiles.size())) {
                     interactionService.record(profiles.get(i).id(), new RecordInteractionRequest(
-                        "synthetic-" + seed + "-" + i + "-" + j,
+                        "synthetic-" + seed + "-" + runShortId + "-" + i + "-" + j,
                         profiles.get(j).id(),
                         compatible ? "LIKE" : "PASS",
                         OffsetDateTime.now(),

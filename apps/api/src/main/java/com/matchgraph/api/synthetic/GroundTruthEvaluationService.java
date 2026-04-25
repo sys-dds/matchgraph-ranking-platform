@@ -9,6 +9,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import com.matchgraph.api.retrieval.HardExclusionService;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,9 +20,11 @@ import org.springframework.web.server.ResponseStatusException;
 public class GroundTruthEvaluationService {
 
     private final SyntheticPopulationRepository repository;
+    private final HardExclusionService hardExclusionService;
 
-    public GroundTruthEvaluationService(SyntheticPopulationRepository repository) {
+    public GroundTruthEvaluationService(SyntheticPopulationRepository repository, HardExclusionService hardExclusionService) {
         this.repository = repository;
+        this.hardExclusionService = hardExclusionService;
     }
 
     @Transactional
@@ -45,8 +49,13 @@ public class GroundTruthEvaluationService {
         Set<String> clusters = new HashSet<>();
         int longTail = 0;
         int safetyViolations = 0;
+        int evaluatedSafetyPairs = 0;
         for (int i = 0; i < items.size(); i++) {
             SyntheticPopulationRepository.DecisionItemFact item = items.get(i);
+            evaluatedSafetyPairs++;
+            if (hardExclusionService.exclusionReason(decision.profileId(), item.candidateProfileId()).isPresent()) {
+                safetyViolations++;
+            }
             SyntheticGroundTruthLabel label = labels.get(item.candidateProfileId());
             BigDecimal relevance = label == null ? BigDecimal.ZERO : label.expectedRelevance();
             if (label != null && "POSITIVE".equals(label.compatibilityLabel())) {
@@ -82,6 +91,8 @@ public class GroundTruthEvaluationService {
             "clusterCoverage", clusterCoverage,
             "longTailCoverage", longTailCoverage,
             "safetyViolationCount", safetyViolations,
+            "evaluatedSafetyPairs", evaluatedSafetyPairs,
+            "safetyViolationEvidenceStatus", safetyViolations == 0 ? "NO_VIOLATIONS_FOUND" : "VIOLATIONS_FOUND",
             "labelSource", "known synthetic compatibility labels"
         );
         repository.insertEvaluationResult(

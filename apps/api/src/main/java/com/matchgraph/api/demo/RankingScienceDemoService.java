@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -68,6 +69,23 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class RankingScienceDemoService {
+
+    private static final Set<String> CRITICAL_STEPS = Set.of(
+        "synthetic_population",
+        "retrieval",
+        "feature_snapshots",
+        "baseline_ranking",
+        "feed_refresh",
+        "explainability",
+        "synthetic_ground_truth_evaluation"
+    );
+    private static final Set<String> OPTIONAL_STEPS = Set.of(
+        "bandit",
+        "interleaving",
+        "exposure",
+        "offline_evaluation",
+        "counterfactual_evaluation"
+    );
 
     private final RankingScienceDemoRepository repository;
     private final SyntheticPopulationService syntheticPopulationService;
@@ -261,7 +279,7 @@ public class RankingScienceDemoService {
         });
 
         RankingScienceDemoReport report = state.report();
-        repository.completeRun(demoRunId, "COMPLETED", reportMap(report));
+        repository.completeRun(demoRunId, report.failedCriticalStepCount() == 0 ? "COMPLETED" : "FAILED_CRITICAL", reportMap(report));
         return report;
     }
 
@@ -277,12 +295,25 @@ public class RankingScienceDemoService {
             long duration = (System.nanoTime() - started) / 1_000_000;
             state.durationByStep.put(name, duration);
             repository.insertStep(state.demoRunId, name, "COMPLETED", result, duration);
+            state.completedStepCount++;
         } catch (Exception exception) {
             long duration = (System.nanoTime() - started) / 1_000_000;
             Map<String, Object> result = Map.of("reason", exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage());
             state.durationByStep.put(name, duration);
-            state.skippedSteps.add(Map.of("stepName", name, "reason", result.get("reason")));
-            repository.insertStep(state.demoRunId, name, "SKIPPED", result, duration);
+            if (CRITICAL_STEPS.contains(name)) {
+                Map<String, Object> failure = Map.of("stepName", name, "reason", result.get("reason"));
+                state.criticalStepFailures.add(failure);
+                repository.insertStep(state.demoRunId, name, "FAILED_CRITICAL", result, duration);
+            } else if (OPTIONAL_STEPS.contains(name)) {
+                Map<String, Object> skipped = Map.of("stepName", name, "reason", result.get("reason"));
+                state.optionalSkippedSteps.add(skipped);
+                state.skippedSteps.add(skipped);
+                repository.insertStep(state.demoRunId, name, "SKIPPED_OPTIONAL", result, duration);
+            } else {
+                Map<String, Object> failure = Map.of("stepName", name, "reason", result.get("reason"));
+                state.criticalStepFailures.add(failure);
+                repository.insertStep(state.demoRunId, name, "FAILED_CRITICAL", result, duration);
+            }
         }
     }
 
@@ -319,6 +350,11 @@ public class RankingScienceDemoService {
         result.put("syntheticEvaluationRunId", report.syntheticEvaluationRunId());
         result.put("keyMetrics", report.keyMetrics());
         result.put("skippedSteps", report.skippedSteps());
+        result.put("criticalStepFailures", report.criticalStepFailures());
+        result.put("optionalSkippedSteps", report.optionalSkippedSteps());
+        result.put("completedStepCount", report.completedStepCount());
+        result.put("failedCriticalStepCount", report.failedCriticalStepCount());
+        result.put("skippedOptionalStepCount", report.skippedOptionalStepCount());
         return result;
     }
 
@@ -345,6 +381,9 @@ public class RankingScienceDemoService {
         private SyntheticEvaluationRun syntheticEvaluation;
         private final Map<String, Long> durationByStep = new LinkedHashMap<>();
         private final List<Map<String, Object>> skippedSteps = new ArrayList<>();
+        private final List<Map<String, Object>> criticalStepFailures = new ArrayList<>();
+        private final List<Map<String, Object>> optionalSkippedSteps = new ArrayList<>();
+        private int completedStepCount;
 
         private DemoState(UUID demoRunId, long seed) {
             this.demoRunId = demoRunId;
@@ -362,6 +401,8 @@ public class RankingScienceDemoService {
                 metrics.put("groundTruthNdcgAtK", syntheticEvaluation.result().ndcgAtK());
             }
             metrics.put("skippedStepCount", skippedSteps.size());
+            metrics.put("criticalStepFailureCount", criticalStepFailures.size());
+            metrics.put("optionalSkippedStepCount", optionalSkippedSteps.size());
             return new RankingScienceDemoReport(
                 demoRunId,
                 syntheticPopulation == null ? null : syntheticPopulation.id(),
@@ -383,7 +424,12 @@ public class RankingScienceDemoService {
                 syntheticEvaluation == null ? null : syntheticEvaluation.id(),
                 metrics,
                 durationByStep,
-                skippedSteps
+                skippedSteps,
+                criticalStepFailures,
+                optionalSkippedSteps,
+                completedStepCount,
+                criticalStepFailures.size(),
+                optionalSkippedSteps.size()
             );
         }
     }

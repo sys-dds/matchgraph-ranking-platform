@@ -92,7 +92,7 @@ public class DiscoveryFeedService {
         for (AdjustedRankingItem item : adjustedItems) {
             feedRepository.insertItem(feedSnapshotId, rankingDecision, item);
         }
-        List<FeedItem> items = feedRepository.page(feedSnapshotId, 0, limit);
+        List<FeedItem> items = visibleItems(profileId, feedRepository.page(feedSnapshotId, 0, limit));
         FeedSnapshot persisted = feedRepository.findSnapshot(profileId, feedSnapshotId)
             .map(snapshot -> new FeedSnapshot(
                 snapshot.id(),

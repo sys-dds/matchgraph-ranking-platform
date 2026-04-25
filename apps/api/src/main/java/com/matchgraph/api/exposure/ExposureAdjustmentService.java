@@ -28,12 +28,13 @@ public class ExposureAdjustmentService {
         return repository.activePolicy()
             .filter(policy -> "ACTIVE".equals(policy.status()))
             .map(policy -> adjusted(viewerProfileId, decision, feedSnapshotId, policy))
-            .orElseGet(() -> original(decision.items()));
+            .orElseGet(() -> original(viewerProfileId, decision.items()));
     }
 
     private List<AdjustedRankingItem> adjusted(UUID viewerProfileId, RankingDecision decision, UUID feedSnapshotId, ExposureControlPolicy policy) {
         List<AdjustedRankingItem> scored = decision.items().stream()
             .map(item -> adjustment(viewerProfileId, decision.id(), feedSnapshotId, policy, item))
+            .filter(item -> !"HARD_EXCLUSION_DROPPED".equals(item.reason()))
             .sorted(Comparator
                 .comparing(AdjustedRankingItem::adjustedScore).reversed()
                 .thenComparing(adjusted -> adjusted.item().candidateProfileId().toString()))
@@ -66,11 +67,11 @@ public class ExposureAdjustmentService {
         if (!hardExcluded && rolling >= policy.rolling7DayCap()) {
             downrank = policy.overexposureDownrank();
             reason = "OVEREXPOSED_DOWNRANK";
-        } else if (!hardExcluded && rolling <= 1) {
+        } else if (!hardExcluded && rolling < policy.rolling7DayCap()) {
             boost = policy.longTailBoost().add(policy.newProfileMinimumBoost());
             reason = "LONG_TAIL_OR_NEW_PROFILE_BOOST";
         } else if (hardExcluded) {
-            reason = "HARD_EXCLUSION_OVERRIDE";
+            reason = "HARD_EXCLUSION_DROPPED";
         }
         BigDecimal adjustedScore = item.finalScore().add(boost).subtract(downrank);
         if (!"NO_EXPOSURE_ADJUSTMENT".equals(reason)) {
@@ -90,8 +91,9 @@ public class ExposureAdjustmentService {
         return new AdjustedRankingItem(item, item.position(), adjustedScore, boost, downrank, reason);
     }
 
-    private List<AdjustedRankingItem> original(List<RankingDecisionItem> items) {
+    private List<AdjustedRankingItem> original(UUID viewerProfileId, List<RankingDecisionItem> items) {
         return items.stream()
+            .filter(item -> hardExclusionService.exclusionReason(viewerProfileId, item.candidateProfileId()).isEmpty())
             .map(item -> new AdjustedRankingItem(item, item.position(), item.finalScore(), BigDecimal.ZERO, BigDecimal.ZERO, "POLICY_DISABLED"))
             .toList();
     }
