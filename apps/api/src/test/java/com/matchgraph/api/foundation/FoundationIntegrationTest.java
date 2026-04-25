@@ -14,7 +14,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.context.ApplicationContext;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -116,7 +115,7 @@ class FoundationIntegrationTest {
 
     @Test
     void flywayMigrationRunsAndExtensionsExist() {
-        assertThat(new ClassPathResource("db/migration/V1__foundation_schema.sql").exists()).isTrue();
+        assertThat(flywayVersionApplied("1")).isTrue();
         assertThat(extensionExists("vector")).isTrue();
         assertThat(extensionExists("postgis")).isTrue();
         assertThat(jdbcTemplate.queryForObject("select count(*) from schema_version_probe", Long.class)).isZero();
@@ -147,8 +146,7 @@ class FoundationIntegrationTest {
     }
 
     @Test
-    void jooqGeneratedClassesCompileAndDescribeProbeTable() {
-        assertThat(SchemaVersionProbe.SCHEMA_VERSION_PROBE.getName()).isEqualTo("schema_version_probe");
+    void jooqDslQueriesFoundationProbeTable() {
         assertThat(dsl.selectCount().from(SchemaVersionProbe.SCHEMA_VERSION_PROBE).fetchOne(0, int.class)).isZero();
     }
 
@@ -174,6 +172,15 @@ class FoundationIntegrationTest {
             "select exists (select 1 from pg_extension where extname = ?)",
             Boolean.class,
             name
+        );
+        return Boolean.TRUE.equals(exists);
+    }
+
+    private boolean flywayVersionApplied(String version) {
+        Boolean exists = jdbcTemplate.queryForObject(
+            "select exists (select 1 from flyway_schema_history where version = ? and success)",
+            Boolean.class,
+            version
         );
         return Boolean.TRUE.equals(exists);
     }

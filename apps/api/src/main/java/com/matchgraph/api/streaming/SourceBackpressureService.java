@@ -26,6 +26,6 @@ public class SourceBackpressureService {
     }
 
     public SourceBackpressureAction restore(String sourceKey) {
-        return repository.saveAction(sourceKey, "RESTORE", 0, 0, OffsetDateTime.now(), Map.of("reversible", true, "restored", true));
+        return repository.saveAction(sourceKey, "RESTORE", 0, 0, OffsetDateTime.now().plusMinutes(30), Map.of("reversible", true, "restored", true));
     }
 }
