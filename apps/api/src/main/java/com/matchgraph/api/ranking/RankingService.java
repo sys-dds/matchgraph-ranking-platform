@@ -47,6 +47,21 @@ public class RankingService {
 
     @Transactional
     public RankingDecision run(UUID profileId, UUID featureSnapshotRunId, String requestedVersion, Integer requestedLimit, String decisionType) {
+        return run(profileId, featureSnapshotRunId, requestedVersion, requestedLimit, decisionType, null, null, null, null);
+    }
+
+    @Transactional
+    public RankingDecision run(
+        UUID profileId,
+        UUID featureSnapshotRunId,
+        String requestedVersion,
+        Integer requestedLimit,
+        String decisionType,
+        String experimentKey,
+        String assignedVariant,
+        UUID assignmentId,
+        Map<String, Object> cacheContext
+    ) {
         if (featureSnapshotRunId == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "featureSnapshotRunId is required");
         }
@@ -54,6 +69,7 @@ public class RankingService {
         FeatureSnapshotRun snapshotRun = featureSnapshotService.get(profileId, featureSnapshotRunId);
         RankingVersion version = rankingRepository.version(requestedVersion);
         int limit = sanitizeLimit(requestedLimit);
+        String normalizedDecisionType = decisionType == null ? "RANKING_RUN" : decisionType;
 
         Set<UUID> recentlySeen = rankingRepository.recentlySeenCandidateIds(profileId).stream().collect(Collectors.toSet());
         List<ScoredCandidate> scored = computeRanking(snapshotRun, version, limit, recentlySeen);
@@ -61,15 +77,27 @@ public class RankingService {
         List<UUID> candidatePool = snapshotRun.candidates().stream()
             .map(CandidateFeatureSnapshot::candidateProfileId)
             .toList();
+        Map<String, Object> rankingContext = rankingContext(
+            recentlySeen,
+            limit,
+            version.versionKey(),
+            normalizedDecisionType,
+            experimentKey,
+            assignedVariant,
+            assignmentId,
+            cacheContext,
+            snapshotRun
+        );
         UUID decisionLogId = rankingRepository.createDecision(
             profileId,
             snapshotRun.retrievalRunId(),
             snapshotRun.id(),
             version.versionKey(),
-            decisionType == null ? "RANKING_RUN" : decisionType,
+            normalizedDecisionType,
             snapshotRun.candidates().size(),
             scored.size(),
-            candidatePool
+            candidatePool,
+            rankingContext
         );
 
         int position = 1;
@@ -103,10 +131,16 @@ public class RankingService {
 
     public RankingReplayResponse replay(UUID decisionLogId) {
         RankingDecision decision = get(decisionLogId);
-        RankingVersion version = rankingRepository.version(decision.rankingVersion());
+        Map<String, Object> context = decision.rankingContext();
+        RankingVersion version = rankingRepository.version(stringContext(context, "rankingVersion", decision.rankingVersion()));
         FeatureSnapshotRun snapshotRun = featureSnapshotRepository.findRun(decision.profileId(), decision.featureSnapshotRunId())
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "feature snapshot run not found"));
-        List<ScoredCandidate> replayed = computeRanking(snapshotRun, version, decision.servedCount(), Set.of());
+        List<ScoredCandidate> replayed = computeRanking(
+            snapshotRun,
+            version,
+            intContext(context, "requestedLimit", decision.servedCount()),
+            uuidSetContext(context, "recentlySeenCandidateIds")
+        );
         List<UUID> originalOrder = decision.items().stream()
             .map(RankingDecisionItem::candidateProfileId)
             .toList();
@@ -126,6 +160,19 @@ public class RankingService {
         );
     }
 
+    public List<RankingReplayItem> rankStoredSnapshot(
+        UUID profileId,
+        UUID featureSnapshotRunId,
+        String rankingVersion,
+        int limit,
+        Map<String, Object> rankingContext
+    ) {
+        RankingVersion version = rankingRepository.version(rankingVersion);
+        FeatureSnapshotRun snapshotRun = featureSnapshotRepository.findRun(profileId, featureSnapshotRunId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "feature snapshot run not found"));
+        return replayedItems(computeRanking(snapshotRun, version, limit, uuidSetContext(rankingContext == null ? Map.of() : rankingContext, "recentlySeenCandidateIds")));
+    }
+
     private List<ScoredCandidate> computeRanking(FeatureSnapshotRun snapshotRun, RankingVersion version, int limit, Set<UUID> recentlySeen) {
         List<ScoredCandidate> baseScored = snapshotRun.candidates().stream()
             .map(candidate -> score(candidate, version.policy()))
@@ -140,6 +187,60 @@ public class RankingService {
                 .thenComparing(candidate -> candidate.snapshot().candidateProfileId().toString()))
             .limit(limit)
             .toList();
+    }
+
+    private Map<String, Object> rankingContext(
+        Set<UUID> recentlySeen,
+        int requestedLimit,
+        String rankingVersion,
+        String decisionType,
+        String experimentKey,
+        String assignedVariant,
+        UUID assignmentId,
+        Map<String, Object> cacheContext,
+        FeatureSnapshotRun snapshotRun
+    ) {
+        Map<String, Object> context = new LinkedHashMap<>();
+        context.put("recentlySeenCandidateIds", recentlySeen.stream().map(UUID::toString).sorted().toList());
+        context.put("requestedLimit", requestedLimit);
+        context.put("rankingVersion", rankingVersion);
+        context.put("decisionType", decisionType);
+        context.put("experimentKey", blankToNull(experimentKey));
+        context.put("assignedVariant", blankToNull(assignedVariant));
+        context.put("assignmentId", assignmentId == null ? null : assignmentId.toString());
+        context.put("cacheContext", cacheContext == null ? null : cacheContext);
+        context.put("retrievalRunId", snapshotRun.retrievalRunId().toString());
+        context.put("featureSnapshotRunId", snapshotRun.id().toString());
+        return context;
+    }
+
+    private Set<UUID> uuidSetContext(Map<String, Object> context, String key) {
+        Object raw = context.get(key);
+        if (!(raw instanceof List<?> values)) {
+            return Set.of();
+        }
+        return values.stream()
+            .map(String::valueOf)
+            .map(UUID::fromString)
+            .collect(Collectors.toSet());
+    }
+
+    private int intContext(Map<String, Object> context, String key, int defaultValue) {
+        Object raw = context.get(key);
+        if (raw == null) {
+            return defaultValue;
+        }
+        return Integer.parseInt(String.valueOf(raw));
+    }
+
+    private String stringContext(Map<String, Object> context, String key, String defaultValue) {
+        Object raw = context.get(key);
+        String value = raw == null ? null : String.valueOf(raw);
+        return value == null || value.isBlank() ? defaultValue : value;
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private List<RankingReplayItem> replayedItems(List<ScoredCandidate> replayed) {

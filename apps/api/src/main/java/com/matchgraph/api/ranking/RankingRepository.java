@@ -58,16 +58,17 @@ public class RankingRepository {
         String decisionType,
         int candidateCount,
         int servedCount,
-        List<UUID> candidatePool
+        List<UUID> candidatePool,
+        Map<String, Object> rankingContext
     ) {
         UUID id = UUID.randomUUID();
         jdbcTemplate.update(
             """
                 insert into ranking_decision_logs (
                     id, profile_id, retrieval_run_id, feature_snapshot_run_id, ranking_version,
-                    decision_type, candidate_count, served_count, candidate_pool_json
+                    decision_type, candidate_count, served_count, candidate_pool_json, ranking_context_json
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb)
                 """,
             id,
             profileId,
@@ -77,7 +78,8 @@ public class RankingRepository {
             decisionType,
             candidateCount,
             servedCount,
-            toJson(candidatePool)
+            toJson(candidatePool),
+            toJson(rankingContext == null ? Map.of() : rankingContext)
         );
         return id;
     }
@@ -107,7 +109,8 @@ public class RankingRepository {
         List<RankingDecision> decisions = jdbcTemplate.query(
             """
                 select id, profile_id, retrieval_run_id, feature_snapshot_run_id, ranking_version,
-                    decision_type, candidate_count, served_count, candidate_pool_json::text as candidate_pool_json, created_at
+                    decision_type, candidate_count, served_count, candidate_pool_json::text as candidate_pool_json,
+                    ranking_context_json::text as ranking_context_json, created_at
                 from ranking_decision_logs
                 where id = ?
                   and profile_id = ?
@@ -127,6 +130,7 @@ public class RankingRepository {
                 decision.candidateCount(),
                 decision.servedCount(),
                 decision.candidatePool(),
+                decision.rankingContext(),
                 decision.createdAt(),
                 findDecisionItems(decision.id())
             ));
@@ -136,7 +140,8 @@ public class RankingRepository {
         List<RankingDecision> decisions = jdbcTemplate.query(
             """
                 select id, profile_id, retrieval_run_id, feature_snapshot_run_id, ranking_version,
-                    decision_type, candidate_count, served_count, candidate_pool_json::text as candidate_pool_json, created_at
+                    decision_type, candidate_count, served_count, candidate_pool_json::text as candidate_pool_json,
+                    ranking_context_json::text as ranking_context_json, created_at
                 from ranking_decision_logs
                 where id = ?
                 """,
@@ -154,6 +159,7 @@ public class RankingRepository {
                 decision.candidateCount(),
                 decision.servedCount(),
                 decision.candidatePool(),
+                decision.rankingContext(),
                 decision.createdAt(),
                 findDecisionItems(decision.id())
             ));
@@ -220,6 +226,7 @@ public class RankingRepository {
             rs.getInt("candidate_count"),
             rs.getInt("served_count"),
             uuidList(rs.getString("candidate_pool_json")),
+            map(rs.getString("ranking_context_json")),
             rs.getObject("created_at", OffsetDateTime.class),
             List.of()
         );
