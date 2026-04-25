@@ -325,12 +325,10 @@ class Mgrp016To022ExperimentsMetricsEvaluationCacheScaleIntegrationTest {
         });
 
         assertThat(Arrays.stream(applicationContext.getBeanDefinitionNames()))
-            .noneMatch(name -> name.toLowerCase().contains("shadow")
-                || name.toLowerCase().contains("champion")
-                || name.toLowerCase().contains("bandit")
-                || name.toLowerCase().contains("interleav")
-                || name.toLowerCase().contains("fairness")
-                || name.toLowerCase().contains("groundtruth"));
+            .noneMatch(name -> name.toLowerCase().contains("payment")
+                || name.toLowerCase().contains("marketplace")
+                || name.toLowerCase().contains("frontend")
+                || name.toLowerCase().contains("chat"));
     }
 
     private ProfileResponse seededProfile(String externalRef, String displayName, String city, double embeddingSeed) {

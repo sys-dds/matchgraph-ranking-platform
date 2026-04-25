@@ -11,6 +11,7 @@ import java.util.UUID;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.matchgraph.api.exposure.AdjustedRankingItem;
 import com.matchgraph.api.ranking.RankingDecision;
 import com.matchgraph.api.ranking.RankingDecisionItem;
 import com.matchgraph.api.ranking.RankingReason;
@@ -64,6 +65,14 @@ public class FeedRepository {
     }
 
     public void insertItem(UUID feedSnapshotId, RankingDecision decision, RankingDecisionItem rankedItem) {
+        insertItem(feedSnapshotId, decision, rankedItem, rankedItem.position(), rankedItem.finalScore());
+    }
+
+    public void insertItem(UUID feedSnapshotId, RankingDecision decision, AdjustedRankingItem adjustedItem) {
+        insertItem(feedSnapshotId, decision, adjustedItem.item(), adjustedItem.adjustedPosition(), adjustedItem.adjustedScore());
+    }
+
+    private void insertItem(UUID feedSnapshotId, RankingDecision decision, RankingDecisionItem rankedItem, int position, BigDecimal score) {
         jdbcTemplate.update(
             """
                 insert into feed_items (
@@ -78,8 +87,8 @@ public class FeedRepository {
             decision.retrievalRunId(),
             decision.id(),
             rankedItem.candidateProfileId(),
-            rankedItem.position(),
-            rankedItem.finalScore(),
+            position,
+            score,
             toJson(rankedItem.reasons()),
             toJson(rankedItem.diversityAdjustments()),
             toJson(rankedItem.sourceTypes()),
