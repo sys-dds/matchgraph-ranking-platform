@@ -34,6 +34,8 @@ import com.matchgraph.api.profile.UpsertProfileEmbeddingRequest;
 import com.matchgraph.api.ranking.RankingDecision;
 import com.matchgraph.api.ranking.RankingDecisionItem;
 import com.matchgraph.api.ranking.RankingReason;
+import com.matchgraph.api.ranking.RankingReplayItem;
+import com.matchgraph.api.ranking.RankingReplayResponse;
 import com.matchgraph.api.ranking.RankingRunRequest;
 import com.matchgraph.api.retrieval.CandidateRetrievalRun;
 import com.matchgraph.api.retrieval.RunRetrievalRequest;
@@ -94,6 +96,7 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
         ProfileResponse coldStart = createProfile("mgrp010-candidate-c", "Cold Start", "Leeds");
         ProfileResponse repeated = createProfile("mgrp010-candidate-d", "Repeated", "Glasgow");
         ProfileResponse blocked = createProfile("mgrp010-candidate-blocked", "Blocked", "Glasgow");
+        ProfileResponse graphConnector = createProfile("mgrp010-graph-connector", "Graph Connector", "Glasgow");
 
         putInterests(actor.id(), "ranking", "java");
         putInterests(graphVectorLocal.id(), "ranking", "java");
@@ -121,12 +124,14 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
         touchLastActive(coldStart.id(), OffsetDateTime.now().minusHours(6));
         touchLastActive(repeated.id(), OffsetDateTime.now().minusHours(1));
         graph(actor.id(), graphVectorLocal.id());
+        graph(actor.id(), graphConnector.id());
+        graph(graphConnector.id(), graphVectorLocal.id());
         graph(actor.id(), repeated.id());
 
         CandidateRetrievalRun retrievalRun = exchange(
             "/api/v1/profiles/" + actor.id() + "/retrieval/run",
             HttpMethod.POST,
-            new RunRetrievalRequest(20),
+            new RunRetrievalRequest(20, null, null),
             CandidateRetrievalRun.class
         ).getBody();
         assertThat(retrievalRun.status()).isEqualTo("COMPLETED");
@@ -145,6 +150,14 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
         assertThat(snapshotRun.candidates()).isNotEmpty();
         CandidateFeatureSnapshot graphSnapshot = snapshotFor(snapshotRun, graphVectorLocal.id());
         assertFeatureKeys(graphSnapshot, "shared_interest_count", "graph_distance", "vector_distance", "distance_band", "candidate_source_set", "safety_state");
+        assertThat(value(graphSnapshot, "has_graph_source").numericValue()).isEqualByComparingTo(BigDecimal.ONE);
+        assertThat(value(graphSnapshot, "has_vector_source").numericValue()).isEqualByComparingTo(BigDecimal.ONE);
+        assertThat(value(graphSnapshot, "has_location_source").numericValue()).isEqualByComparingTo(BigDecimal.ONE);
+        assertThat(graphSnapshot.sourceTypes()).contains("VECTOR_SIMILARITY", "LOCATION_NEARBY");
+        assertThat(graphSnapshot.sourceTypes()).containsAnyOf("GRAPH_TWO_HOP", "GRAPH_MUTUALS", "WEAK_TIE_EXPLORATION");
+        assertThat(value(graphSnapshot, "candidate_source_set").jsonValue())
+            .containsEntry("sourceTypes", graphSnapshot.sourceTypes());
+        assertThat((List<?>) value(graphSnapshot, "retrieval_source_reason_json").jsonValue().get("items")).isNotEmpty();
         assertThat(value(graphSnapshot, "safety_state").textValue()).isEqualTo("UNREVIEWED");
 
         RankingDecision ranking = exchange(
@@ -157,6 +170,7 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
         assertThat(ranking.items()).isNotEmpty();
         ranking.items().forEach(this::assertReasonsSumToBaseScore);
         assertThat(ranking.items()).anySatisfy(item -> assertThat(item.diversityAdjustments()).isNotEmpty());
+        assertThat(ranking.items()).anySatisfy(item -> assertThat(item.finalScore()).isNotEqualByComparingTo(item.baseScore()));
 
         FeedSnapshot feedSnapshot = exchange(
             "/api/v1/profiles/" + actor.id() + "/feed/discovery/refresh",
@@ -205,14 +219,34 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
             RankingDecision.class,
             feedSnapshot.rankingDecisionLogId()
         );
-        RankingDecision replay = exchange(
+        assertThat(feedSnapshot.items()).allSatisfy(item -> assertThat(item.rankingReasons()).isNotEmpty());
+        assertThat(feedSnapshot.items()).allSatisfy(item -> assertThat(item.diversityAdjustments()).isNotNull());
+        assertThat(feedSnapshot.items()).anySatisfy(item -> assertThat(item.diversityAdjustments()).isNotEmpty());
+        feedSnapshot.items().forEach(item -> {
+            RankingDecisionItem decisionItem = decisionLog.items().stream()
+                .filter(candidate -> candidate.candidateProfileId().equals(item.candidateProfileId()))
+                .findFirst()
+                .orElseThrow();
+            assertThat(item.score()).isEqualByComparingTo(decisionItem.baseScore().add(adjustmentSum(decisionItem)));
+            assertThat(item.rankingReasons()).isEqualTo(decisionItem.reasons());
+            assertThat(item.diversityAdjustments()).isEqualTo(decisionItem.diversityAdjustments());
+        });
+        int retrievalRunCountBeforeReplay = rowCount("candidate_retrieval_runs");
+        int snapshotRunCountBeforeReplay = rowCount("feature_snapshot_runs");
+        RankingReplayResponse replay = exchange(
             "/api/v1/ranking-decisions/" + feedSnapshot.rankingDecisionLogId() + "/replay",
             HttpMethod.POST,
             null,
-            RankingDecision.class
+            RankingReplayResponse.class
         ).getBody();
-        assertThat(replay.items()).extracting(RankingDecisionItem::candidateProfileId)
+        assertThat(replay.orderMatches()).isTrue();
+        assertThat(replay.originalOrder())
             .containsExactlyElementsOf(decisionLog.items().stream().map(RankingDecisionItem::candidateProfileId).toList());
+        assertThat(replay.replayedOrder()).containsExactlyElementsOf(replay.originalOrder());
+        assertThat(replay.replayedItems()).extracting(RankingReplayItem::candidateProfileId)
+            .containsExactlyElementsOf(replay.originalOrder());
+        assertThat(rowCount("candidate_retrieval_runs")).isEqualTo(retrievalRunCountBeforeReplay);
+        assertThat(rowCount("feature_snapshot_runs")).isEqualTo(snapshotRunCountBeforeReplay);
 
         graph(actor.id(), blocked.id(), "block");
         FeedSnapshot refreshedAfterBlock = exchange(
@@ -232,6 +266,22 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
         assertThat(matches(actor.id())).hasSize(1);
         SwipeResponse duplicateSwipe = swipe(graphVectorLocal.id(), actor.id(), "RIGHT", "swipe-b-right-1");
         assertThat(duplicateSwipe.duplicate()).isTrue();
+        assertThat(matches(actor.id())).hasSize(1);
+        assertThat(rightSwipeCount(actor.id(), graphVectorLocal.id())).isEqualTo(2);
+        ResponseEntity<Map> duplicateDifferentTarget = exchange(
+            "/api/v1/profiles/" + graphVectorLocal.id() + "/swipes",
+            HttpMethod.POST,
+            new SwipeRequest(regional.id(), "RIGHT", "swipe-b-right-1"),
+            Map.class
+        );
+        assertThat(duplicateDifferentTarget.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        ResponseEntity<Map> duplicateDifferentDirection = exchange(
+            "/api/v1/profiles/" + graphVectorLocal.id() + "/swipes",
+            HttpMethod.POST,
+            new SwipeRequest(actor.id(), "LEFT", "swipe-b-right-1"),
+            Map.class
+        );
+        assertThat(duplicateDifferentDirection.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(matches(actor.id())).hasSize(1);
 
         ProfileResponse concurrentA = createProfile("mgrp010-concurrent-a", "Concurrent A", "Perth");
@@ -341,6 +391,12 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
         assertThat(sum).isEqualByComparingTo(item.baseScore());
     }
 
+    private BigDecimal adjustmentSum(RankingDecisionItem item) {
+        return item.diversityAdjustments().stream()
+            .map(RankingReason::scoreDelta)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
     private SwipeResponse swipe(UUID actorId, UUID targetId, String direction, String clientEventId) {
         ResponseEntity<SwipeResponse> response = exchange(
             "/api/v1/profiles/" + actorId + "/swipes",
@@ -376,6 +432,11 @@ class Mgrp010To015RankingFeedMatchingIntegrationTest {
 
     private List<MatchResponse> matches(UUID profileId) {
         return Arrays.asList(restTemplate.getForObject("/api/v1/profiles/{profileId}/matches", MatchResponse[].class, profileId));
+    }
+
+    private int rowCount(String tableName) {
+        Integer count = jdbcTemplate.queryForObject("select count(*)::int from " + tableName, Integer.class);
+        return count == null ? 0 : count;
     }
 
     private void runConcurrentReciprocalSwipes(UUID firstProfileId, UUID secondProfileId) throws Exception {

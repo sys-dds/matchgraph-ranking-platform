@@ -24,7 +24,7 @@ public class RankingDecisionController {
     }
 
     @PostMapping("/{decisionLogId}/replay")
-    public RankingDecision replay(@PathVariable UUID decisionLogId) {
+    public RankingReplayResponse replay(@PathVariable UUID decisionLogId) {
         return rankingService.replay(decisionLogId);
     }
 }

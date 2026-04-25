@@ -21,6 +21,12 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class FeatureSnapshotService {
 
+    private static final List<String> GRAPH_SOURCE_TYPES = List.of(
+        "GRAPH_TWO_HOP",
+        "GRAPH_MUTUALS",
+        "WEAK_TIE_EXPLORATION"
+    );
+
     private static final List<String> REQUIRED_FEATURES = List.of(
         "shared_interest_count",
         "source_count",
@@ -104,14 +110,14 @@ public class FeatureSnapshotService {
         List<CandidateFeatureValue> values = new ArrayList<>();
         values.add(numeric("shared_interest_count", BigDecimal.valueOf(sharedInterestCount), "FRESH"));
         values.add(numeric("source_count", BigDecimal.valueOf(retrievalFact.sourceTypes().size()), "FRESH"));
-        values.add(numeric("has_graph_source", bool(retrievalFact.sourceTypes().contains("GRAPH")), "FRESH"));
+        values.add(numeric("has_graph_source", bool(hasAnySource(retrievalFact.sourceTypes(), GRAPH_SOURCE_TYPES)), "FRESH"));
         values.add(numeric("graph_distance", graphFact.graphDistance(), graphFact.graphDistance() == null ? "MISSING" : "FRESH"));
         values.add(numeric("mutual_count", BigDecimal.valueOf(graphFact.mutualCount()), "FRESH"));
         values.add(numeric("common_neighbour_count", BigDecimal.valueOf(graphFact.commonNeighbourCount()), "FRESH"));
-        values.add(numeric("has_vector_source", bool(retrievalFact.sourceTypes().contains("VECTOR")), "FRESH"));
+        values.add(numeric("has_vector_source", bool(retrievalFact.sourceTypes().contains("VECTOR_SIMILARITY")), "FRESH"));
         values.add(numeric("vector_distance", vectorDistance, vectorDistance == null ? "MISSING" : embeddingFreshness(profileFact)));
         values.add(text("embedding_version", profileFact.embeddingVersion(), profileFact.embeddingVersion() == null ? "MISSING" : embeddingFreshness(profileFact)));
-        values.add(numeric("has_location_source", bool(retrievalFact.sourceTypes().contains("LOCATION")), "FRESH"));
+        values.add(numeric("has_location_source", bool(retrievalFact.sourceTypes().contains("LOCATION_NEARBY")), "FRESH"));
         values.add(text("distance_band", distanceBand(profileFact.approximateDistanceKm()), profileFact.approximateDistanceKm() == null ? "MISSING" : locationFreshness(profileFact)));
         values.add(numeric("approximate_distance_km", profileFact.approximateDistanceKm(), profileFact.approximateDistanceKm() == null ? "MISSING" : locationFreshness(profileFact)));
         BigDecimal lastActiveAgeHours = lastActiveAgeHours(profileFact.lastActiveAt());
@@ -152,6 +158,10 @@ public class FeatureSnapshotService {
 
     private BigDecimal bool(boolean value) {
         return value ? BigDecimal.ONE : BigDecimal.ZERO;
+    }
+
+    private boolean hasAnySource(List<String> sourceTypes, List<String> expectedSourceTypes) {
+        return sourceTypes.stream().anyMatch(expectedSourceTypes::contains);
     }
 
     private BigDecimal lastActiveAgeHours(OffsetDateTime lastActiveAt) {

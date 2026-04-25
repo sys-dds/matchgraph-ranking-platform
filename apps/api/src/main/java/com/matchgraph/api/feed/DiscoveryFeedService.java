@@ -48,7 +48,7 @@ public class DiscoveryFeedService {
         int limit = sanitizeLimit(request == null ? null : request.limit());
         UUID retrievalRunId = request == null ? null : request.retrievalRunId();
         CandidateRetrievalRun retrievalRun = retrievalRunId == null
-            ? candidateRetrievalService.run(profileId, new RunRetrievalRequest(limit))
+            ? candidateRetrievalService.run(profileId, new RunRetrievalRequest(limit, null, null))
             : candidateRetrievalService.get(profileId, retrievalRunId);
         FeatureSnapshotRun snapshotRun = featureSnapshotService.createFromRetrieval(profileId, retrievalRun.id());
         RankingDecision rankingDecision = rankingService.run(profileId, snapshotRun.id(), "v1_balanced", limit, "FEED_REFRESH");

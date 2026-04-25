@@ -30,10 +30,11 @@ public class MatchingService {
     @Transactional
     public SwipeResponse swipe(UUID actorProfileId, SwipeRequest request) {
         validate(actorProfileId, request);
-        matchingRepository.lockPair(actorProfileId, request.targetProfileId());
-        return matchingRepository.findSwipeByClientEvent(actorProfileId, request.clientEventId().trim())
-            .map(existing -> withExistingMatch(existing))
-            .orElseGet(() -> createSwipe(actorProfileId, request));
+        SwipeRequest normalized = normalize(request);
+        matchingRepository.lockPair(actorProfileId, normalized.targetProfileId());
+        return matchingRepository.findSwipeByClientEvent(actorProfileId, normalized.clientEventId())
+            .map(existing -> existingSwipeOrConflict(existing, normalized))
+            .orElseGet(() -> createSwipe(actorProfileId, normalized));
     }
 
     public List<MatchResponse> matches(UUID profileId) {
@@ -42,7 +43,7 @@ public class MatchingService {
     }
 
     private SwipeResponse createSwipe(UUID actorProfileId, SwipeRequest request) {
-        SwipeResponse swipe = matchingRepository.createSwipe(actorProfileId, normalize(request));
+        SwipeResponse swipe = matchingRepository.createSwipe(actorProfileId, request);
         if (!"RIGHT".equals(swipe.direction()) || !matchingRepository.rightSwipePairComplete(actorProfileId, swipe.targetProfileId())) {
             return swipe;
         }
@@ -61,6 +62,13 @@ public class MatchingService {
             matchCreation.created(),
             matchCreation.match()
         );
+    }
+
+    private SwipeResponse existingSwipeOrConflict(SwipeResponse existing, SwipeRequest request) {
+        if (!existing.targetProfileId().equals(request.targetProfileId()) || !existing.direction().equals(request.direction())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "clientEventId already used for a different swipe");
+        }
+        return withExistingMatch(existing);
     }
 
     private SwipeResponse withExistingMatch(SwipeResponse existing) {
