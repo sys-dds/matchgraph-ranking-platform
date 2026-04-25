@@ -5,6 +5,9 @@ import java.util.UUID;
 
 import com.matchgraph.api.experiment.ExperimentService;
 import com.matchgraph.api.experiment.RankingExperimentAssignment;
+import com.matchgraph.api.exposure.AdjustedRankingItem;
+import com.matchgraph.api.exposure.ExposureAdjustmentService;
+import com.matchgraph.api.exposure.ExposureLedgerService;
 import com.matchgraph.api.features.FeatureSnapshotRun;
 import com.matchgraph.api.features.FeatureSnapshotService;
 import com.matchgraph.api.profile.ProfileService;
@@ -34,6 +37,8 @@ public class DiscoveryFeedService {
     private final ExperimentService experimentService;
     private final OnlineServingCacheService cacheService;
     private final HardExclusionService hardExclusionService;
+    private final ExposureAdjustmentService exposureAdjustmentService;
+    private final ExposureLedgerService exposureLedgerService;
 
     public DiscoveryFeedService(
         FeedRepository feedRepository,
@@ -43,7 +48,9 @@ public class DiscoveryFeedService {
         ProfileService profileService,
         ExperimentService experimentService,
         OnlineServingCacheService cacheService,
-        HardExclusionService hardExclusionService
+        HardExclusionService hardExclusionService,
+        ExposureAdjustmentService exposureAdjustmentService,
+        ExposureLedgerService exposureLedgerService
     ) {
         this.feedRepository = feedRepository;
         this.candidateRetrievalService = candidateRetrievalService;
@@ -53,6 +60,8 @@ public class DiscoveryFeedService {
         this.experimentService = experimentService;
         this.cacheService = cacheService;
         this.hardExclusionService = hardExclusionService;
+        this.exposureAdjustmentService = exposureAdjustmentService;
+        this.exposureLedgerService = exposureLedgerService;
     }
 
     @Transactional
@@ -79,11 +88,12 @@ public class DiscoveryFeedService {
         );
         UUID feedSnapshotId = feedRepository.createSnapshot(profileId, rankingDecision);
         cacheService.invalidateFeed(profileId);
-        for (var item : rankingDecision.items()) {
+        List<AdjustedRankingItem> adjustedItems = exposureAdjustmentService.adjust(profileId, rankingDecision, feedSnapshotId);
+        for (AdjustedRankingItem item : adjustedItems) {
             feedRepository.insertItem(feedSnapshotId, rankingDecision, item);
         }
         List<FeedItem> items = feedRepository.page(feedSnapshotId, 0, limit);
-        return feedRepository.findSnapshot(profileId, feedSnapshotId)
+        FeedSnapshot persisted = feedRepository.findSnapshot(profileId, feedSnapshotId)
             .map(snapshot -> new FeedSnapshot(
                 snapshot.id(),
                 snapshot.profileId(),
@@ -96,6 +106,8 @@ public class DiscoveryFeedService {
                 items
             ))
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "feed snapshot was not persisted"));
+        exposureLedgerService.recordServed(profileId, persisted, rankingDecision, items);
+        return persisted;
     }
 
     private RankingExperimentAssignment assignment(UUID profileId, String experimentKey) {
@@ -124,6 +136,8 @@ public class DiscoveryFeedService {
             ? null
             : String.valueOf(items.getLast().position());
         FeedPage page = new FeedPage(items, nextCursor, java.util.Map.of("cacheHit", false, "cacheCategory", "feedPage"));
+        RankingDecision decision = rankingService.get(profileId, snapshot.rankingDecisionLogId());
+        exposureLedgerService.recordServed(profileId, snapshot, decision, items);
         cacheService.putFeed(cacheKey, page);
         cacheService.putFeed(cacheService.activeFeedKey(profileId), snapshot.id());
         return page;
