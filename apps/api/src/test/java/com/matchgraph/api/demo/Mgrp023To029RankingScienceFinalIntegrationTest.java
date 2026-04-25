@@ -149,6 +149,10 @@ class Mgrp023To029RankingScienceFinalIntegrationTest {
         SyntheticPopulationRun population = syntheticPopulationService.create(new SyntheticPopulationRequest(23029L, 10, 3, BigDecimal.valueOf(0.40), Map.of("test", true)));
         assertThat(population.profiles()).hasSize(10);
         assertThat(count("synthetic_ground_truth_labels")).isGreaterThan(0);
+        SyntheticPopulationRun repeatedPopulation = syntheticPopulationService.create(new SyntheticPopulationRequest(23029L, 10, 3, BigDecimal.valueOf(0.40), Map.of("test", "repeatability")));
+        assertThat(repeatedPopulation.profiles()).hasSize(population.profiles().size());
+        assertThat(repeatedPopulation.clusterCount()).isEqualTo(population.clusterCount());
+        assertThat(labelCount(repeatedPopulation.id())).isEqualTo(labelCount(population.id()));
 
         UUID actor = population.profiles().getFirst().profileId();
         UUID hidden = population.profiles().getLast().profileId();
@@ -181,6 +185,10 @@ class Mgrp023To029RankingScienceFinalIntegrationTest {
         graphEdgeService.block(actor, new GraphActionRequest(hidden, "integration hidden proof"));
         CandidateExplanation hiddenExplanation = explainabilityService.whyHidden(actor, hidden);
         assertThat(hiddenExplanation.reasons()).contains("BLOCKED_EITHER_DIRECTION");
+        UUID blockedServedCandidate = feed.items().getFirst().candidateProfileId();
+        graphEdgeService.block(actor, new GraphActionRequest(blockedServedCandidate, "integration feed refresh safety proof"));
+        FeedSnapshot safeRefresh = feedService.refresh(actor, new FeedRefreshRequest(retrieval.id(), 10, null));
+        assertThat(safeRefresh.items()).noneMatch(item -> item.candidateProfileId().equals(blockedServedCandidate));
 
         String banditKey = "mgrp025-bandit";
         banditPolicyService.create(new BanditPolicyRequest(
@@ -196,7 +204,19 @@ class Mgrp023To029RankingScienceFinalIntegrationTest {
                 new BanditArmRequest("vector", "VECTOR_SIMILARITY", "VECTOR_SIMILARITY boost", BigDecimal.ONE, Map.of())
             )
         ));
-        BanditDecision banditDecision = banditDecisionService.decide(actor, banditKey, new BanditDecisionRequest(feed.items().getFirst().candidateProfileId(), null, "default", Map.of("test", true), false));
+        BanditDecision banditDecision = banditDecisionService.decide(actor, banditKey, new BanditDecisionRequest(safeRefresh.items().getFirst().candidateProfileId(), null, "default", Map.of(
+            "test", true,
+            "HARD_EXCLUSIONS_ENFORCED", false,
+            "applyToRanking", "tampered"
+        ), true));
+        assertThat(banditDecision.decisionContext())
+            .containsEntry("HARD_EXCLUSIONS_ENFORCED", true)
+            .containsEntry("applyToRanking", true)
+            .containsEntry("applyToRankingMode", "DECISION_ONLY")
+            .containsEntry("selectedArmKey", banditDecision.selectedArmKey())
+            .containsEntry("contextSegment", "default")
+            .containsKey("selectedArmStrategy")
+            .containsKey("requestedCandidateProfileId");
         BanditReward reward = banditRewardService.reward(new BanditRewardRequest(banditDecision.id(), banditKey, actor, banditDecision.candidateProfileId(), "LIKE", null, null));
         assertThat(reward.rewardValue()).isPositive();
         assertThat((List<?>) banditPolicyService.summary(banditKey).get("stats")).isNotEmpty();
@@ -224,6 +244,11 @@ class Mgrp023To029RankingScienceFinalIntegrationTest {
             Integer.class,
             hidden
         ).getFirst()).isZero();
+        assertThat(jdbcTemplate.queryForList(
+            "select adjustment_reason from exposure_adjustments where candidate_profile_id = ?",
+            String.class,
+            blockedServedCandidate
+        )).contains("HARD_EXCLUSION_DROPPED");
 
         SyntheticEvaluationRun syntheticEvaluation = groundTruthEvaluationService.evaluate(new SyntheticEvaluationRequest(population.id(), baseline.id(), baseline.rankingVersion(), 10));
         assertThat(syntheticEvaluation.result().precisionAtK()).isNotNull();
@@ -231,6 +256,10 @@ class Mgrp023To029RankingScienceFinalIntegrationTest {
         assertThat(syntheticEvaluation.result().mrr()).isNotNull();
         assertThat(syntheticEvaluation.result().clusterCoverage()).isNotNull();
         assertThat(syntheticEvaluation.result().longTailCoverage()).isNotNull();
+        assertThat(syntheticEvaluation.result().metrics())
+            .containsEntry("safetyViolationEvidenceStatus", "VIOLATIONS_FOUND")
+            .containsKey("evaluatedSafetyPairs");
+        assertThat(syntheticEvaluation.result().safetyViolationCount()).isGreaterThan(0);
 
         assertThat(counterfactualEvaluationService.evaluate(new CounterfactualEvaluationRequest(baseline.id(), "v1_vector_affinity", 10)).items()).isNotEmpty();
 
@@ -243,6 +272,17 @@ class Mgrp023To029RankingScienceFinalIntegrationTest {
         assertThat(report.feedSnapshotId()).isNotNull();
         assertThat(report.explanationRequestIds()).isNotEmpty();
         assertThat(report.durationByStep()).isNotEmpty();
+        assertThat(report.criticalStepFailures()).isEmpty();
+        assertThat(report.failedCriticalStepCount()).isZero();
+        assertThat(report.completedStepCount()).isGreaterThanOrEqualTo(7);
+        assertThat(report.skippedOptionalStepCount()).isEqualTo(report.optionalSkippedSteps().size());
+        assertThat(report.optionalSkippedSteps()).allSatisfy(step ->
+            assertThat(List.of("bandit", "interleaving", "exposure", "offline_evaluation", "counterfactual_evaluation"))
+                .contains(String.valueOf(step.get("stepName")))
+        );
+        assertThat(demoService.get(report.demoRunId()).steps()).allSatisfy(step ->
+            assertThat(step.stepStatus()).isIn("COMPLETED", "SKIPPED_OPTIONAL", "FAILED_CRITICAL")
+        );
 
         assertThat(applicationContext.getBeanDefinitionNames()).noneMatch(name -> name.toLowerCase().contains("frontend"));
         assertThat(applicationContext.getBeanDefinitionNames()).noneMatch(name -> name.toLowerCase().contains("payment"));
@@ -255,6 +295,15 @@ class Mgrp023To029RankingScienceFinalIntegrationTest {
 
     private int count(String table) {
         Integer count = jdbcTemplate.queryForObject("select count(*)::int from " + table, Integer.class);
+        return count == null ? 0 : count;
+    }
+
+    private int labelCount(UUID runId) {
+        Integer count = jdbcTemplate.queryForObject(
+            "select count(*)::int from synthetic_ground_truth_labels where run_id = ?",
+            Integer.class,
+            runId
+        );
         return count == null ? 0 : count;
     }
 }

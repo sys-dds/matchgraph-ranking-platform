@@ -3,6 +3,7 @@ package com.matchgraph.api.bandit;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
+import java.util.LinkedHashMap;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -49,19 +50,30 @@ public class BanditDecisionService {
         UUID candidate = safeCandidate(profileId, request);
         String contextSegment = contextSegment(request);
         BanditArm arm = chooseArm(policy, arms, contextSegment, profileId, candidate);
-        Map<String, Object> context = Map.of(
-            "requestedCandidateCount", request == null || request.candidateProfileIds() == null ? 0 : request.candidateProfileIds().size(),
-            "applyToRanking", request != null && request.applyToRanking(),
-            "feedRankingIntegration", request != null && request.applyToRanking() ? "EXPLICIT_DECISION_ONLY" : "NONE",
-            "safetyConstraints", "HARD_EXCLUSIONS_ENFORCED"
-        );
+        boolean applyToRanking = request != null && request.applyToRanking();
+        Map<String, Object> systemContext = new LinkedHashMap<>();
+        systemContext.put("requestedCandidateCount", request == null || request.candidateProfileIds() == null ? 0 : request.candidateProfileIds().size());
+        systemContext.put("applyToRanking", applyToRanking);
+        systemContext.put("applyToRankingMode", applyToRanking ? "DECISION_ONLY" : "NONE");
+        systemContext.put("feedRankingIntegration", applyToRanking ? "DECISION_ONLY" : "NONE");
+        systemContext.put("HARD_EXCLUSIONS_ENFORCED", true);
+        systemContext.put("safetyConstraints", "HARD_EXCLUSIONS_ENFORCED");
+        systemContext.put("selectedArmKey", arm.armKey());
+        systemContext.put("selectedArmStrategy", arm.strategy());
+        systemContext.put("requestedCandidateProfileId", candidate == null ? null : candidate.toString());
+        systemContext.put("contextSegment", contextSegment);
+        Map<String, Object> context = new LinkedHashMap<>();
+        if (request != null && request.decisionContext() != null) {
+            context.putAll(request.decisionContext());
+        }
+        context.putAll(systemContext);
         UUID decisionId = decisionRepository.insertDecision(
             policy.id(),
             arm.id(),
             profileId,
             candidate,
             contextSegment,
-            request == null || request.decisionContext() == null ? context : request.decisionContext(),
+            context,
             arm.armKey(),
             selectionReason(policy, arm, contextSegment),
             true
