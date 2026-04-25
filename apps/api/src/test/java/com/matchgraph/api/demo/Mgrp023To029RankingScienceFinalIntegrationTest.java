@@ -287,7 +287,10 @@ class Mgrp023To029RankingScienceFinalIntegrationTest {
         assertThat(applicationContext.getBeanDefinitionNames()).noneMatch(name -> name.toLowerCase().contains("frontend"));
         assertThat(applicationContext.getBeanDefinitionNames()).noneMatch(name -> name.toLowerCase().contains("payment"));
         assertThat(applicationContext.getBeanDefinitionNames()).noneMatch(name -> name.toLowerCase().contains("marketplace"));
-        assertThat(applicationContext.getBeanDefinitionNames()).noneMatch(name -> name.toLowerCase().contains("realtime"));
+        assertThat(applicationContext.getBeanDefinitionNames()).filteredOn(name -> !name.startsWith("org.springframework")).noneMatch(name -> name.toLowerCase().contains("realtimecollab")
+            || (name.toLowerCase().contains("websocket") && !name.equals("websocketServletWebServerCustomizer"))
+            || name.toLowerCase().contains("crdt")
+            || name.toLowerCase().contains("presence"));
         assertThat(applicationContext.getBeanDefinitionNames()).noneMatch(name -> name.toLowerCase().contains("kafkarelay")
             || name.toLowerCase().contains("relayconsumer"));
         assertThat(count("ranking_science_demo_steps")).isGreaterThan(0);

@@ -7,29 +7,43 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import com.matchgraph.api.realtime.CandidateInvalidationService;
 import com.matchgraph.api.serving.ServingModels.CandidateItem;
 import com.matchgraph.api.serving.ServingModels.PreRankRun;
 import com.matchgraph.api.serving.ServingModels.SourceCallResult;
+import com.matchgraph.api.serving.ServingModels.SessionIntentState;
+import com.matchgraph.api.streaming.CandidateTrendService;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 @Service
 public class PreRankService {
 
     private final FeedFatigueService fatigueService;
+    private final PreRankRepository repository;
+    private final ObjectProvider<CandidateInvalidationService> invalidationService;
+    private final ObjectProvider<CandidateTrendService> trendService;
 
-    public PreRankService(FeedFatigueService fatigueService) {
+    public PreRankService(FeedFatigueService fatigueService, PreRankRepository repository, ObjectProvider<CandidateInvalidationService> invalidationService, ObjectProvider<CandidateTrendService> trendService) {
         this.fatigueService = fatigueService;
+        this.repository = repository;
+        this.invalidationService = invalidationService;
+        this.trendService = trendService;
     }
 
-    public PreRankRun preRank(UUID profileId, List<SourceCallResult> sourceResults, int limit) {
+    public PreRankRun preRank(UUID requestId, UUID profileId, List<SourceCallResult> sourceResults, SessionIntentState intent, int limit) {
         Map<UUID, CandidateItem> deduped = new LinkedHashMap<>();
         for (SourceCallResult result : sourceResults) {
             for (CandidateItem candidate : result.candidates()) {
                 if (!deduped.containsKey(candidate.candidateProfileId())) {
                     boolean fatigue = fatigueService.suppressed(profileId, candidate.candidateProfileId(), candidate.sourceKey());
-                    BigDecimal score = candidate.score().add(BigDecimal.valueOf(sourcePriority(candidate.sourceKey())));
-                    deduped.put(candidate.candidateProfileId(), new CandidateItem(candidate.candidateProfileId(), candidate.sourceKey(), score, List.of("cheap_source_priority", "session_intent_weight_available"), candidate.hardExcluded(), fatigue ? "FATIGUE_SUPPRESSED" : candidate.filteredReason()));
+                    boolean invalidated = invalidated(profileId, candidate.candidateProfileId());
+                    BigDecimal intentWeight = intent == null ? BigDecimal.ZERO : intent.sourceWeights().getOrDefault(candidate.sourceKey(), BigDecimal.ZERO);
+                    BigDecimal trendBoost = candidate.hardExcluded() || invalidated ? BigDecimal.ZERO : trendBoost(candidate.candidateProfileId());
+                    BigDecimal score = candidate.score().add(BigDecimal.valueOf(sourcePriority(candidate.sourceKey()))).add(intentWeight).add(trendBoost);
+                    String filteredReason = invalidated ? "REALTIME_INVALIDATED" : fatigue ? "FATIGUE_SUPPRESSED" : candidate.filteredReason();
+                    deduped.put(candidate.candidateProfileId(), new CandidateItem(candidate.candidateProfileId(), candidate.sourceKey(), score, List.of("cheap_source_priority", "session_intent_weight=" + intentWeight, "bounded_trend_boost=" + trendBoost, fatigue ? "fatigue_suppressed" : "fatigue_clear", invalidated ? "realtime_invalidated" : "realtime_clear"), candidate.hardExcluded() || invalidated, filteredReason));
                 }
             }
         }
@@ -42,7 +56,21 @@ public class PreRankService {
             .sorted(Comparator.comparing(CandidateItem::score).reversed().thenComparing(candidate -> candidate.candidateProfileId().toString()))
             .limit(limit)
             .toList();
-        return new PreRankRun(UUID.randomUUID(), survivors, filtered, Map.of("deduped", deduped.size(), "hardExclusionsRemoved", filtered.stream().filter(CandidateItem::hardExcluded).count()));
+        Map<String, Object> summary = Map.of("deduped", deduped.size(), "hardExclusionsRemoved", filtered.stream().filter(CandidateItem::hardExcluded).count(), "sessionIntentApplied", intent != null);
+        UUID runId = repository.createRun(requestId, deduped.size(), survivors.size(), limit, summary);
+        survivors.forEach(item -> repository.insertItem(runId, item, true));
+        filtered.forEach(item -> repository.insertItem(runId, item, false));
+        return new PreRankRun(runId, survivors, filtered, summary);
+    }
+
+    private boolean invalidated(UUID profileId, UUID candidateId) {
+        CandidateInvalidationService service = invalidationService.getIfAvailable();
+        return service != null && service.invalidated(profileId, candidateId);
+    }
+
+    private BigDecimal trendBoost(UUID candidateId) {
+        CandidateTrendService service = trendService.getIfAvailable();
+        return service == null ? BigDecimal.ZERO : service.safeBoost(candidateId);
     }
 
     private int sourcePriority(String source) {
