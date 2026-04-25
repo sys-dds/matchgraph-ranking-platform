@@ -9,16 +9,20 @@ import java.util.UUID;
 import com.matchgraph.api.serving.ServingModels.RecommendationSession;
 import com.matchgraph.api.serving.ServingModels.SessionIntentEvent;
 import com.matchgraph.api.serving.ServingModels.SessionIntentState;
+import com.matchgraph.api.realtime.LiveSessionIntentRepository;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 @Service
 public class SessionIntentService {
 
     private final SessionIntentRepository repository;
+    private final ObjectProvider<LiveSessionIntentRepository> liveIntentRepository;
 
-    public SessionIntentService(SessionIntentRepository repository) {
+    public SessionIntentService(SessionIntentRepository repository, ObjectProvider<LiveSessionIntentRepository> liveIntentRepository) {
         this.repository = repository;
+        this.liveIntentRepository = liveIntentRepository;
     }
 
     public RecommendationSession create(UUID profileId) {
@@ -47,6 +51,12 @@ public class SessionIntentService {
             };
             weights.merge(source, delta, BigDecimal::add);
         }
+        liveIntentRepository.ifAvailable(live -> live.latest(sessionId).ifPresent(snapshot -> {
+            snapshot.sourceWeights().forEach((source, weight) -> weights.merge(source, weight, BigDecimal::add));
+            explanation.put("liveIntentV2Applied", true);
+            explanation.put("liveIntentConfidence", snapshot.confidenceScore());
+            explanation.put("liveIntentDecayFactor", snapshot.decayFactor());
+        }));
         explanation.put("semantics", "short-lived explainable source preference weights; safety still wins");
         explanation.put("expiresAt", session.expiresAt().toString());
         return new SessionIntentState(sessionId, session.profileId(), weights, explanation, session.expiresAt());

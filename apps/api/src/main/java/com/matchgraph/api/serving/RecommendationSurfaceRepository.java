@@ -14,6 +14,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.matchgraph.api.serving.ServingModels.CandidateItem;
 import com.matchgraph.api.serving.ServingModels.RecommendationSession;
 import com.matchgraph.api.serving.ServingModels.ServedItem;
+import com.matchgraph.api.serving.ServingModels.SourceCallResult;
 import com.matchgraph.api.serving.ServingModels.SurfaceConfig;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -89,6 +90,11 @@ public class RecommendationSurfaceRepository {
 
     public UUID createServingRequest(UUID profileId, String surfaceKey, UUID sessionId, boolean degraded, int servedCount, Map<String, Object> trace, Map<String, Object> result) {
         UUID id = UUID.randomUUID();
+        createServingRequestWithId(id, profileId, surfaceKey, sessionId, degraded, servedCount, trace, result);
+        return id;
+    }
+
+    public void createServingRequestWithId(UUID id, UUID profileId, String surfaceKey, UUID sessionId, boolean degraded, int servedCount, Map<String, Object> trace, Map<String, Object> result) {
         jdbcTemplate.update(
             """
                 insert into multi_stage_serving_requests (
@@ -105,7 +111,80 @@ public class RecommendationSurfaceRepository {
             toJson(trace),
             toJson(result)
         );
+    }
+
+    public void updateServingTrace(UUID requestId, Map<String, Object> trace, Map<String, Object> result) {
+        jdbcTemplate.update(
+            """
+                update multi_stage_serving_requests
+                set trace_json = ?::jsonb,
+                    result_json = ?::jsonb
+                where id = ?
+                """,
+            toJson(trace),
+            toJson(result),
+            requestId
+        );
+    }
+
+    public UUID createSourceRoutingPlan(UUID requestId, SurfaceConfig surface, UUID sessionId, Map<String, Object> plan) {
+        UUID id = UUID.randomUUID();
+        jdbcTemplate.update(
+            """
+                insert into source_routing_plans (id, request_id, surface_key, session_id, plan_json)
+                values (?, ?, ?, ?, ?::jsonb)
+                """,
+            id,
+            requestId,
+            surface.surfaceKey(),
+            sessionId,
+            toJson(plan)
+        );
         return id;
+    }
+
+    public void insertSourceRoutingPlanItem(UUID planId, String sourceKey, int priority, int maxCandidates, int timeoutMs, String fallbackSource, String healthStatus, java.math.BigDecimal qualityScore, Map<String, Object> detail) {
+        jdbcTemplate.update(
+            """
+                insert into source_routing_plan_items (
+                    id, plan_id, source_key, priority, max_candidates, timeout_budget_ms,
+                    cost_weight, fallback_source, health_status, quality_score
+                )
+                values (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                """,
+            UUID.randomUUID(),
+            planId,
+            sourceKey,
+            priority,
+            maxCandidates,
+            timeoutMs,
+            fallbackSource,
+            healthStatus,
+            qualityScore
+        );
+    }
+
+    public void insertSourceCallResult(UUID requestId, SourceCallResult result) {
+        jdbcTemplate.update(
+            """
+                insert into source_call_results (
+                    id, request_id, source_key, completed_at, duration_ms, returned_count,
+                    timeout, degraded, fallback_used, fallback_source, degraded_reason, candidates_json
+                )
+                values (?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                """,
+            UUID.randomUUID(),
+            requestId,
+            result.sourceKey(),
+            result.durationMs(),
+            result.returnedCount(),
+            result.timeout(),
+            result.degraded(),
+            result.fallbackUsed(),
+            result.fallbackSource(),
+            result.degradedReason(),
+            toJson(result.candidates())
+        );
     }
 
     public void insertTraceStep(UUID requestId, String stepName, String status, int durationMs, Map<String, Object> detail) {
@@ -263,7 +342,7 @@ public class RecommendationSurfaceRepository {
         return count != null && count > 0;
     }
 
-    public void insertServingQuality(UUID requestId, boolean degraded, int fallbackCount, int timeoutCount, int partialResultCount, List<String> warnings) {
+    public UUID insertServingQuality(UUID requestId, boolean degraded, int fallbackCount, int timeoutCount, int partialResultCount, List<String> warnings) {
         UUID runId = UUID.randomUUID();
         jdbcTemplate.update(
             """
@@ -288,6 +367,7 @@ public class RecommendationSurfaceRepository {
         insertStageMetric(runId, "pre_rank", 5, 50, "PASS", false, false, false, null);
         insertStageMetric(runId, "heavy_rank", fallbackCount > 0 ? 150 : 30, 100, fallbackCount > 0 ? "WARN" : "PASS", fallbackCount > 0, fallbackCount > 0, false, fallbackCount > 0 ? "model fallback" : null);
         insertStageMetric(runId, "slate_optimize", 5, 50, partialResultCount > 0 ? "WARN" : "PASS", partialResultCount > 0, false, partialResultCount > 0, partialResultCount > 0 ? "partial slate" : null);
+        return runId;
     }
 
     private void insertStageMetric(UUID runId, String stage, int duration, int budget, String status, boolean degraded, boolean fallback, boolean partial, String warning) {

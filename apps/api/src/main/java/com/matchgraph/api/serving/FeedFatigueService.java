@@ -21,6 +21,7 @@ public class FeedFatigueService {
     }
 
     public void recordServed(UUID profileId, UUID candidateId, String source, int repetitionCount) {
+        repository.suppress(profileId, candidateId, source, "served candidate fatigue event history", 1, repetitionCount);
         if (repetitionCount >= policy.exposureThreshold()) {
             repository.suppress(profileId, candidateId, source, "temporary fatigue cooldown", policy.candidateCooldownMinutes(), repetitionCount);
         }

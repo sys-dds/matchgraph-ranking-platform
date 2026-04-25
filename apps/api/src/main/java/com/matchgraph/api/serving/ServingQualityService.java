@@ -14,7 +14,7 @@ public class ServingQualityService {
         this.repository = repository;
     }
 
-    public void record(UUID requestId, boolean degraded, int fallbackCount, int timeoutCount, int partialResultCount, List<String> warnings) {
-        repository.record(requestId, degraded, fallbackCount, timeoutCount, partialResultCount, warnings);
+    public UUID record(UUID requestId, boolean degraded, int fallbackCount, int timeoutCount, int partialResultCount, List<String> warnings) {
+        return repository.record(requestId, degraded, fallbackCount, timeoutCount, partialResultCount, warnings);
     }
 }

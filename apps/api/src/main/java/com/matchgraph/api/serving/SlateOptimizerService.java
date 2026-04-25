@@ -5,22 +5,34 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import com.matchgraph.api.realtime.CandidateInvalidationService;
 import com.matchgraph.api.serving.ServingModels.CandidateItem;
 import com.matchgraph.api.serving.ServingModels.ServedItem;
 import com.matchgraph.api.serving.ServingModels.SlateOptimizationRun;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 @Service
 public class SlateOptimizerService {
 
     private final SlateConstraintService constraintService;
+    private final SlateOptimizationRepository repository;
+    private final ObjectProvider<CandidateInvalidationService> invalidationService;
 
-    public SlateOptimizerService(SlateConstraintService constraintService) {
+    @Autowired
+    public SlateOptimizerService(SlateConstraintService constraintService, SlateOptimizationRepository repository, ObjectProvider<CandidateInvalidationService> invalidationService) {
         this.constraintService = constraintService;
+        this.repository = repository;
+        this.invalidationService = invalidationService;
     }
 
-    public SlateOptimizationRun optimize(List<CandidateItem> ranked, int resultSize, boolean simulatePartial) {
+    public SlateOptimizerService(SlateConstraintService constraintService, SlateOptimizationRepository repository) {
+        this(constraintService, repository, null);
+    }
+
+    public SlateOptimizationRun optimize(UUID requestId, List<CandidateItem> ranked, int resultSize, boolean simulatePartial) {
         Map<String, Integer> sourceCounts = constraintService.emptyCounts();
         List<ServedItem> selected = new ArrayList<>();
         List<CandidateItem> dropped = new ArrayList<>();
@@ -41,6 +53,15 @@ public class SlateOptimizerService {
             }
         }
         boolean partial = selected.size() < resultSize;
-        return new SlateOptimizationRun(UUID.randomUUID(), selected, dropped, partial, partial ? "partial slate: constraints or requested simulation limited output" : null);
+        String warning = partial ? "partial slate: constraints or requested simulation limited output" : null;
+        UUID runId = repository.createRun(requestId, Map.of("maxSameSourceTopK", 2, "safetyOverridesAll", true, "fatigueSuppression", true), partial, warning);
+        int original = 1;
+        for (ServedItem item : selected) {
+            repository.insertSelected(runId, item, original++);
+        }
+        for (CandidateItem item : dropped) {
+            repository.insertDropped(runId, item, original++);
+        }
+        return new SlateOptimizationRun(runId, selected, dropped, partial, warning);
     }
 }

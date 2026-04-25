@@ -35,6 +35,9 @@ public final class ServingModels {
     public record SourceRoutingPlan(UUID id, UUID requestId, List<String> sources, Map<String, Object> detail) {
     }
 
+    public record SourceRoutingResult(UUID planId, List<SourceCallResult> sourceResults, Map<String, Object> budgetReasons) {
+    }
+
     public record SourceCallResult(String sourceKey, int durationMs, int returnedCount, boolean timeout, boolean degraded, boolean fallbackUsed, String fallbackSource, String degradedReason, List<CandidateItem> candidates) {
     }
 
