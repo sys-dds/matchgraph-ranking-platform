@@ -16,6 +16,9 @@ import com.matchgraph.api.features.CandidateFeatureValue;
 import com.matchgraph.api.features.FeatureSnapshotRepository;
 import com.matchgraph.api.features.FeatureSnapshotRun;
 import com.matchgraph.api.features.FeatureSnapshotService;
+import com.matchgraph.api.ltr.LtrModelArtifact;
+import com.matchgraph.api.ltr.LtrModelRegistryService;
+import com.matchgraph.api.ltr.LtrModelVersion;
 import com.matchgraph.api.profile.ProfileService;
 
 import org.springframework.http.HttpStatus;
@@ -32,17 +35,20 @@ public class RankingService {
     private final FeatureSnapshotRepository featureSnapshotRepository;
     private final FeatureSnapshotService featureSnapshotService;
     private final ProfileService profileService;
+    private final LtrModelRegistryService ltrModelRegistryService;
 
     public RankingService(
         RankingRepository rankingRepository,
         FeatureSnapshotRepository featureSnapshotRepository,
         FeatureSnapshotService featureSnapshotService,
-        ProfileService profileService
+        ProfileService profileService,
+        LtrModelRegistryService ltrModelRegistryService
     ) {
         this.rankingRepository = rankingRepository;
         this.featureSnapshotRepository = featureSnapshotRepository;
         this.featureSnapshotService = featureSnapshotService;
         this.profileService = profileService;
+        this.ltrModelRegistryService = ltrModelRegistryService;
     }
 
     @Transactional
@@ -72,7 +78,8 @@ public class RankingService {
         String normalizedDecisionType = decisionType == null ? "RANKING_RUN" : decisionType;
 
         Set<UUID> recentlySeen = rankingRepository.recentlySeenCandidateIds(profileId).stream().collect(Collectors.toSet());
-        List<ScoredCandidate> scored = computeRanking(snapshotRun, version, limit, recentlySeen);
+        ModelRankingSpec modelSpec = modelSpec(version.versionKey());
+        List<ScoredCandidate> scored = computeRanking(snapshotRun, version, limit, recentlySeen, modelSpec);
 
         List<UUID> candidatePool = snapshotRun.candidates().stream()
             .map(CandidateFeatureSnapshot::candidateProfileId)
@@ -86,7 +93,8 @@ public class RankingService {
             assignedVariant,
             assignmentId,
             cacheContext,
-            snapshotRun
+            snapshotRun,
+            modelSpec
         );
         UUID decisionLogId = rankingRepository.createDecision(
             profileId,
@@ -139,7 +147,8 @@ public class RankingService {
             snapshotRun,
             version,
             intContext(context, "requestedLimit", decision.servedCount()),
-            uuidSetContext(context, "recentlySeenCandidateIds")
+            uuidSetContext(context, "recentlySeenCandidateIds"),
+            modelSpec(version.versionKey())
         );
         List<UUID> originalOrder = decision.items().stream()
             .map(RankingDecisionItem::candidateProfileId)
@@ -170,12 +179,12 @@ public class RankingService {
         RankingVersion version = rankingRepository.version(rankingVersion);
         FeatureSnapshotRun snapshotRun = featureSnapshotRepository.findRun(profileId, featureSnapshotRunId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "feature snapshot run not found"));
-        return replayedItems(computeRanking(snapshotRun, version, limit, uuidSetContext(rankingContext == null ? Map.of() : rankingContext, "recentlySeenCandidateIds")));
+        return replayedItems(computeRanking(snapshotRun, version, limit, uuidSetContext(rankingContext == null ? Map.of() : rankingContext, "recentlySeenCandidateIds"), modelSpec(version.versionKey())));
     }
 
-    private List<ScoredCandidate> computeRanking(FeatureSnapshotRun snapshotRun, RankingVersion version, int limit, Set<UUID> recentlySeen) {
+    private List<ScoredCandidate> computeRanking(FeatureSnapshotRun snapshotRun, RankingVersion version, int limit, Set<UUID> recentlySeen, ModelRankingSpec modelSpec) {
         List<ScoredCandidate> baseScored = snapshotRun.candidates().stream()
-            .map(candidate -> score(candidate, version.policy()))
+            .map(candidate -> modelSpec == null ? score(candidate, version.policy()) : scoreModel(candidate, modelSpec))
             .filter(candidate -> !candidate.blocked())
             .sorted(Comparator
                 .comparing(ScoredCandidate::baseScore).reversed()
@@ -198,7 +207,8 @@ public class RankingService {
         String assignedVariant,
         UUID assignmentId,
         Map<String, Object> cacheContext,
-        FeatureSnapshotRun snapshotRun
+        FeatureSnapshotRun snapshotRun,
+        ModelRankingSpec modelSpec
     ) {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("recentlySeenCandidateIds", recentlySeen.stream().map(UUID::toString).sorted().toList());
@@ -211,6 +221,13 @@ public class RankingService {
         context.put("cacheContext", cacheContext == null ? null : cacheContext);
         context.put("retrievalRunId", snapshotRun.retrievalRunId().toString());
         context.put("featureSnapshotRunId", snapshotRun.id().toString());
+        context.put("modelBackedRanking", modelSpec != null);
+        if (modelSpec != null) {
+            context.put("modelKey", modelSpec.modelKey());
+            context.put("versionKey", modelSpec.versionKey());
+            context.put("modelVersionId", modelSpec.version().id().toString());
+            context.put("featureSchemaVersion", modelSpec.version().featureSchemaVersion());
+        }
         return context;
     }
 
@@ -305,6 +322,82 @@ public class RankingService {
             .reduce(BigDecimal.ZERO, BigDecimal::add)
             .setScale(6, RoundingMode.HALF_UP);
         return new ScoredCandidate(snapshot, baseScore, baseScore, reasons, List.of(), blocked);
+    }
+
+    private ScoredCandidate scoreModel(CandidateFeatureSnapshot snapshot, ModelRankingSpec spec) {
+        Map<String, CandidateFeatureValue> values = valuesByKey(snapshot.values());
+        String safetyState = text(values, "safety_state");
+        boolean blocked = "BLOCKED".equals(safetyState);
+        List<RankingReason> reasons = new ArrayList<>();
+        BigDecimal score = BigDecimal.ZERO;
+        List<Map<String, Object>> contributions = new ArrayList<>();
+        for (String featureName : spec.artifact().featureNames()) {
+            BigDecimal rawValue = numeric(values, featureName);
+            BigDecimal normalized = normalize(featureName, rawValue, spec.artifact().normalization());
+            BigDecimal weight = number(spec.artifact().weights().get(featureName));
+            BigDecimal contribution = normalized.multiply(weight).setScale(6, RoundingMode.HALF_UP);
+            score = score.add(contribution);
+            contributions.add(Map.of(
+                "feature", featureName,
+                "snapshotValue", rawValue,
+                "normalizedValue", normalized,
+                "weight", weight,
+                "contribution", contribution
+            ));
+        }
+        if (blocked) {
+            score = score.subtract(BigDecimal.valueOf(1000));
+        }
+        reasons.add(new RankingReason(
+            "MODEL_WEIGHTED_SCORE",
+            score.setScale(6, RoundingMode.HALF_UP),
+            "LTR model weighted score using stored feature snapshot values only; featureContributions=" + contributions
+        ));
+        return new ScoredCandidate(snapshot, score.setScale(6, RoundingMode.HALF_UP), score.setScale(6, RoundingMode.HALF_UP), reasons, List.of(), blocked);
+    }
+
+    private ModelRankingSpec modelSpec(String versionKey) {
+        if (versionKey == null || !versionKey.startsWith("ltr:")) {
+            return null;
+        }
+        String[] parts = versionKey.split(":", 3);
+        if (parts.length != 3 || parts[1].isBlank() || parts[2].isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "LTR ranking version must be ltr:{modelKey}:{versionKey}");
+        }
+        LtrModelVersion version = ltrModelRegistryService.getVersion(parts[1], parts[2]);
+        if ("REJECTED".equals(version.status()) || "RETIRED".equals(version.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "LTR model version cannot be used for ranking in state " + version.status());
+        }
+        LtrModelArtifact artifact;
+        try {
+            artifact = ltrModelRegistryService.getArtifact(parts[1], parts[2]);
+        } catch (ResponseStatusException exception) {
+            if ("DRAFT".equals(version.status())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "DRAFT LTR model version cannot rank without artifact");
+            }
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "LTR model artifact missing for " + versionKey);
+        }
+        return new ModelRankingSpec(parts[1], parts[2], version, artifact);
+    }
+
+    private BigDecimal normalize(String featureName, BigDecimal value, Map<String, Object> normalization) {
+        Object raw = normalization.get(featureName);
+        if (!(raw instanceof Map<?, ?> map)) {
+            return value;
+        }
+        BigDecimal mean = number(map.containsKey("mean") ? map.get("mean") : "0");
+        BigDecimal std = number(map.containsKey("std") ? map.get("std") : "1");
+        if (std.signum() == 0) {
+            return BigDecimal.ZERO;
+        }
+        return value.subtract(mean).divide(std, 6, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal number(Object value) {
+        if (value == null) {
+            return BigDecimal.ZERO;
+        }
+        return new BigDecimal(String.valueOf(value)).setScale(6, RoundingMode.HALF_UP);
     }
 
     private List<ScoredCandidate> applyDiversityAndExploration(List<ScoredCandidate> candidates, RankingPolicy policy, Set<UUID> recentlySeen) {
@@ -457,5 +550,8 @@ public class RankingService {
         List<RankingReason> diversityAdjustments,
         boolean blocked
     ) {
+    }
+
+    private record ModelRankingSpec(String modelKey, String versionKey, LtrModelVersion version, LtrModelArtifact artifact) {
     }
 }

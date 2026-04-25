@@ -39,6 +39,9 @@ public class RankingRepository {
 
     public RankingVersion version(String requestedVersion) {
         String versionKey = requestedVersion == null || requestedVersion.isBlank() ? "v1_balanced" : requestedVersion.trim();
+        if (versionKey.startsWith("ltr:")) {
+            ensureLtrRankingVersion(versionKey);
+        }
         return jdbcTemplate.queryForObject(
             """
                 select version_key, description, active, policy_json::text as policy_json, created_at
@@ -47,6 +50,18 @@ public class RankingRepository {
                 """,
             this::mapVersion,
             versionKey
+        );
+    }
+
+    public void ensureLtrRankingVersion(String versionKey) {
+        jdbcTemplate.update(
+            """
+                insert into ranking_versions (version_key, description, active, policy_json)
+                values (?, ?, false, '{"signals": {}, "diversity": {}}'::jsonb)
+                on conflict (version_key) do nothing
+                """,
+            versionKey,
+            "Model-backed LTR ranking version persisted for decision log FK compatibility."
         );
     }
 
