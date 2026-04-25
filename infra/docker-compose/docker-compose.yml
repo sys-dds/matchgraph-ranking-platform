@@ -78,7 +78,7 @@ services:
       MATCHGRAPH_DB_USER: ${MATCHGRAPH_DB_USER:-matchgraph}
       MATCHGRAPH_DB_PASSWORD: ${MATCHGRAPH_DB_PASSWORD:-matchgraph}
       MATCHGRAPH_KAFKA_BOOTSTRAP_SERVERS: matchgraph-kafka:9092
-      MATCHGRAPH_CLICKHOUSE_URL: jdbc:clickhouse://matchgraph-clickhouse:8123/${MATCHGRAPH_CLICKHOUSE_DB:-matchgraph}
+      MATCHGRAPH_CLICKHOUSE_URL: jdbc:clickhouse://matchgraph-clickhouse:8123/${MATCHGRAPH_CLICKHOUSE_DB:-matchgraph}?user=${MATCHGRAPH_CLICKHOUSE_USER:-matchgraph}&password=${MATCHGRAPH_CLICKHOUSE_PASSWORD:-matchgraph}
       MATCHGRAPH_REDIS_HOST: matchgraph-redis
       MATCHGRAPH_REDIS_PORT: 6379
     ports:

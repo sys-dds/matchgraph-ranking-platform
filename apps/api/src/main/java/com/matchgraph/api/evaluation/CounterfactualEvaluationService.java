@@ -93,6 +93,11 @@ public class CounterfactualEvaluationService {
         summary.put("unchangedTopK", originalTopK.stream().filter(counterfactualTopK::contains).count());
         summary.put("enteredTopK", counterfactualTopK.stream().filter(candidate -> !originalTopK.contains(candidate)).count());
         summary.put("droppedFromTopK", originalTopK.stream().filter(candidate -> !counterfactualTopK.contains(candidate)).count());
+        summary.put("baselineDecisionLogId", baseline.id().toString());
+        summary.put("baselineRetrievalRunId", baseline.retrievalRunId().toString());
+        summary.put("baselineFeatureSnapshotRunId", baseline.featureSnapshotRunId().toString());
+        summary.put("storedRankingContext", baseline.rankingContext());
+        summary.put("mutationSemantics", "counterfactual evaluation reranks the stored feature snapshot run with stored ranking context; it does not run retrieval, create feature snapshots, or mutate feed snapshots");
         return summary;
     }
 

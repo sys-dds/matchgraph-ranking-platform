@@ -1,11 +1,15 @@
 package com.matchgraph.api.scale;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
+import com.matchgraph.api.evaluation.OfflineEvaluationRequest;
+import com.matchgraph.api.evaluation.OfflineEvaluationService;
 import com.matchgraph.api.features.FeatureSnapshotRun;
 import com.matchgraph.api.features.FeatureSnapshotService;
 import com.matchgraph.api.feed.DiscoveryFeedService;
+import com.matchgraph.api.feed.FeedPage;
 import com.matchgraph.api.feed.FeedRefreshRequest;
 import com.matchgraph.api.ranking.RankingService;
 import com.matchgraph.api.retrieval.CandidateRetrievalRun;
@@ -25,19 +29,22 @@ public class ScaleBenchmarkService {
     private final FeatureSnapshotService featureSnapshotService;
     private final RankingService rankingService;
     private final DiscoveryFeedService feedService;
+    private final OfflineEvaluationService offlineEvaluationService;
 
     public ScaleBenchmarkService(
         ScaleRepository scaleRepository,
         CandidateRetrievalService retrievalService,
         FeatureSnapshotService featureSnapshotService,
         RankingService rankingService,
-        DiscoveryFeedService feedService
+        DiscoveryFeedService feedService,
+        OfflineEvaluationService offlineEvaluationService
     ) {
         this.scaleRepository = scaleRepository;
         this.retrievalService = retrievalService;
         this.featureSnapshotService = featureSnapshotService;
         this.rankingService = rankingService;
         this.feedService = feedService;
+        this.offlineEvaluationService = offlineEvaluationService;
     }
 
     @Transactional
@@ -61,7 +68,34 @@ public class ScaleBenchmarkService {
             start = System.nanoTime();
             feedService.refresh(profileId, new FeedRefreshRequest(retrieval.id(), 20));
             long feedMs = elapsed(start);
-            scaleRepository.insertBenchmarkResult(run.id(), profileId, retrievalMs, snapshotMs, rankingMs, feedMs, retrieval.finalCandidateCount());
+            CacheCounts cacheCounts = cacheCounts(profileId, Boolean.TRUE.equals(normalized.cacheEnabled()));
+            Long evaluationMs = null;
+            if (Boolean.TRUE.equals(normalized.includeOfflineEvaluation())) {
+                start = System.nanoTime();
+                offlineEvaluationService.evaluate(new OfflineEvaluationRequest("v1_balanced", null, null, 10, null));
+                evaluationMs = elapsed(start);
+            }
+            scaleRepository.insertBenchmarkResult(
+                run.id(),
+                profileId,
+                retrievalMs,
+                snapshotMs,
+                rankingMs,
+                feedMs,
+                evaluationMs,
+                retrieval.finalCandidateCount(),
+                cacheCounts.hits(),
+                cacheCounts.misses(),
+                Map.of(
+                    "benchmarkType", "deterministic local ranking benchmark",
+                    "retrievalRunId", retrieval.id().toString(),
+                    "featureSnapshotRunId", snapshot.id().toString(),
+                    "rankingVersion", "v1_balanced",
+                    "candidateCount", retrieval.finalCandidateCount(),
+                    "cacheChecked", Boolean.TRUE.equals(normalized.cacheEnabled()),
+                    "offlineEvaluationIncluded", Boolean.TRUE.equals(normalized.includeOfflineEvaluation())
+                )
+            );
         }
         scaleRepository.completeBenchmarkRun(run.id());
         return get(run.id());
@@ -75,5 +109,25 @@ public class ScaleBenchmarkService {
 
     private long elapsed(long startNanos) {
         return java.time.Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
+    }
+
+    private CacheCounts cacheCounts(UUID profileId, boolean enabled) {
+        if (!enabled) {
+            return new CacheCounts(0, 0);
+        }
+        FeedPage first = feedService.read(profileId, 20, null);
+        FeedPage second = feedService.read(profileId, 20, null);
+        return new CacheCounts(cacheHit(first) + cacheHit(second), cacheMiss(first) + cacheMiss(second));
+    }
+
+    private int cacheHit(FeedPage page) {
+        return Boolean.TRUE.equals(page.cacheMetadata().get("cacheHit")) ? 1 : 0;
+    }
+
+    private int cacheMiss(FeedPage page) {
+        return Boolean.FALSE.equals(page.cacheMetadata().get("cacheHit")) ? 1 : 0;
+    }
+
+    private record CacheCounts(int hits, int misses) {
     }
 }

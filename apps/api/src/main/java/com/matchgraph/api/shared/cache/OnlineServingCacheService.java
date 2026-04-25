@@ -38,7 +38,11 @@ public class OnlineServingCacheService {
         try {
             return Optional.of(objectMapper.readValue(json, type));
         } catch (JsonProcessingException exception) {
-            redisTemplate.delete(key);
+            try {
+                redisTemplate.delete(key);
+            } catch (RuntimeException deleteException) {
+                // Cache is an optimization; corrupt values must not break serving.
+            }
             return Optional.empty();
         }
     }

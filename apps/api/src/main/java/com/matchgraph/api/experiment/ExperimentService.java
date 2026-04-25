@@ -51,19 +51,17 @@ public class ExperimentService {
         RankingExperiment experiment = get(experimentKey);
         String cacheKey = cacheService.assignmentKey(profileId, experiment.experimentKey());
         Optional<RankingExperimentAssignment> cached = cacheService.get(cacheKey, RankingExperimentAssignment.class);
-        if (cached.isPresent()) {
-            return cached.get();
+        Optional<RankingExperimentAssignment> persisted = experimentRepository.assignment(experiment.id(), profileId);
+        if (persisted.isPresent()) {
+            RankingExperimentAssignment assignment = persisted.get();
+            if (cached.isEmpty() || !sameAssignment(cached.get(), assignment)) {
+                cacheService.putAssignment(cacheKey, assignment);
+            }
+            return assignment;
         }
-        return experimentRepository.assignment(experiment.id(), profileId)
-            .map(assignment -> {
-                cacheService.putAssignment(cacheKey, assignment);
-                return assignment;
-            })
-            .orElseGet(() -> {
-                RankingExperimentAssignment assignment = createAssignment(profileId, experiment);
-                cacheService.putAssignment(cacheKey, assignment);
-                return assignment;
-            });
+        RankingExperimentAssignment assignment = createAssignment(profileId, experiment);
+        cacheService.putAssignment(cacheKey, assignment);
+        return assignment;
     }
 
     private RankingExperimentAssignment createAssignment(UUID profileId, RankingExperiment experiment) {
@@ -152,6 +150,9 @@ public class ExperimentService {
         }
         validatePercentage(request.trafficPercentage(), "trafficPercentage");
         validatePercentage(request.holdoutPercentage(), "holdoutPercentage");
+        if (request.holdoutPercentage().compareTo(request.trafficPercentage()) > 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "holdoutPercentage must not exceed trafficPercentage");
+        }
         if (request.variants() == null || request.variants().isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "at least one variant is required");
         }
@@ -165,9 +166,21 @@ public class ExperimentService {
             validatePercentage(variant.allocationPercentage(), "allocationPercentage");
             allocationTotal = allocationTotal.add(variant.allocationPercentage());
         }
-        if (allocationTotal.compareTo(ONE_HUNDRED.subtract(request.holdoutPercentage())) < 0) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "variant allocations must cover non-holdout traffic");
+        BigDecimal nonHoldoutTraffic = request.trafficPercentage().subtract(request.holdoutPercentage());
+        if (allocationTotal.compareTo(nonHoldoutTraffic) != 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "variant allocations must equal non-holdout traffic");
         }
+    }
+
+    private boolean sameAssignment(RankingExperimentAssignment cached, RankingExperimentAssignment persisted) {
+        return cached.id().equals(persisted.id())
+            && cached.experimentId().equals(persisted.experimentId())
+            && cached.profileId().equals(persisted.profileId())
+            && java.util.Objects.equals(cached.assignedVariantKey(), persisted.assignedVariantKey())
+            && cached.assignedRankingVersion().equals(persisted.assignedRankingVersion())
+            && cached.holdout() == persisted.holdout()
+            && cached.assignmentReason().equals(persisted.assignmentReason())
+            && cached.assignmentHash().equals(persisted.assignmentHash());
     }
 
     private String assignmentHash(UUID profileId, String experimentKey) {

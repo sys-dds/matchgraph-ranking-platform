@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -47,11 +48,7 @@ public class OfflineEvaluationRepository {
             request.from(),
             request.to(),
             k,
-            toJson(Map.of(
-                "rankingVersion", blankToNull(request.rankingVersion()),
-                "experimentKey", blankToNull(request.experimentKey()),
-                "k", k
-            ))
+            toJson(requestJson(request, k))
         );
     }
 
@@ -132,15 +129,23 @@ public class OfflineEvaluationRepository {
                 from ranking_decision_logs l
                 join ranking_decision_items i on i.decision_log_id = l.id
                 join candidate_feature_snapshots c on c.id = i.feature_snapshot_id
-                left join interaction_events e
-                  on e.actor_profile_id = l.profile_id
-                 and e.target_profile_id = i.candidate_profile_id
-                 and e.occurred_at >= l.created_at
+                left join lateral (
+                    select event_type
+                    from interaction_events event
+                    where event.actor_profile_id = l.profile_id
+                      and event.target_profile_id = i.candidate_profile_id
+                      and event.occurred_at >= l.created_at
+                      and (event.retrieval_run_id is null or event.retrieval_run_id = l.retrieval_run_id)
+                      and (event.ranking_version is null or event.ranking_version = l.ranking_version)
+                      and (event.feed_position is null or event.feed_position = i.position)
+                    order by event.occurred_at desc, event.created_at desc
+                    limit 1
+                ) e on true
                 where i.position <= ?
-                  and (? is null or l.ranking_version = ?)
-                  and (? is null or l.created_at >= ?)
-                  and (? is null or l.created_at <= ?)
-                  and (? is null or l.ranking_context_json ->> 'experimentKey' = ?)
+                  and (?::text is null or l.ranking_version = ?)
+                  and (?::timestamptz is null or l.created_at >= ?)
+                  and (?::timestamptz is null or l.created_at <= ?)
+                  and (?::text is null or l.ranking_context_json ->> 'experimentKey' = ?)
                 order by l.created_at, l.id, i.position
                 """,
             (rs, rowNum) -> new DecisionLabelRow(
@@ -217,6 +222,14 @@ public class OfflineEvaluationRepository {
 
     private String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private Map<String, Object> requestJson(OfflineEvaluationRequest request, int k) {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("rankingVersion", blankToNull(request.rankingVersion()));
+        json.put("experimentKey", blankToNull(request.experimentKey()));
+        json.put("k", k);
+        return json;
     }
 
     public record DecisionLabelRow(

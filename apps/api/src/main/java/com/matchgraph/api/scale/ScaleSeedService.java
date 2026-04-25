@@ -56,7 +56,19 @@ public class ScaleSeedService {
         for (int index = 0; index < interactions && ids.size() > 1; index++) {
             scaleRepository.addInteraction(ids.get(index % ids.size()), ids.get((index + 3) % ids.size()), index);
         }
-        scaleRepository.completeSeedRun(run.id(), Map.of("createdProfiles", ids.size(), "deterministic", true));
+        scaleRepository.completeSeedRun(run.id(), Map.ofEntries(
+            Map.entry("createdProfiles", ids.size()),
+            Map.entry("createdInterests", ids.size()),
+            Map.entry("createdLocations", Boolean.TRUE.equals(normalized.locationEnabled()) ? ids.size() : 0),
+            Map.entry("createdEmbeddings", Boolean.TRUE.equals(normalized.embeddingEnabled()) ? ids.size() : 0),
+            Map.entry("createdEdgesRequested", edges),
+            Map.entry("createdInteractionsRequested", interactions),
+            Map.entry("staleEmbeddingProfiles", (profiles + 9) / 10),
+            Map.entry("safetyStateProfiles", ids.size()),
+            Map.entry("deterministic", true),
+            Map.entry("randomSeed", seed),
+            Map.entry("benchmarkType", "deterministic local ranking benchmark seed")
+        ));
         return get(run.id());
     }
 
