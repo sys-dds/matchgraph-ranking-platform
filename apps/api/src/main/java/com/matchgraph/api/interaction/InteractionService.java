@@ -26,7 +26,8 @@ public class InteractionService {
         "LIKE",
         "PASS",
         "BLOCK",
-        "REPORT"
+        "REPORT",
+        "MATCH_CREATED"
     );
 
     private final InteractionRepository interactionRepository;
