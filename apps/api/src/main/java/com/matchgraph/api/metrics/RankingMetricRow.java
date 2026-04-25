@@ -4,6 +4,7 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 public record RankingMetricRow(
+    String metricEventId,
     String rankingVersion,
     String experimentKey,
     String variant,

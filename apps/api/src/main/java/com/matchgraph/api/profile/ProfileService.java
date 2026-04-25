@@ -81,7 +81,7 @@ public class ProfileService {
         if (semanticProfileChanged(existing, normalized)) {
             profileRepository.markEmbeddingStaleIfCurrent(id);
         }
-        return hydrate(updated);
+        return hydrate(requireProfile(id));
     }
 
     @Transactional

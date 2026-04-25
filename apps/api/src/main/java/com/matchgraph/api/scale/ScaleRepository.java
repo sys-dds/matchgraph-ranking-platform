@@ -170,14 +170,27 @@ public class ScaleRepository {
         jdbcTemplate.update("update ranking_benchmark_runs set status = 'COMPLETED', completed_at = now() where id = ?", id);
     }
 
-    public void insertBenchmarkResult(UUID runId, UUID profileId, long retrievalMs, long snapshotMs, long rankingMs, long feedMs, int candidates) {
+    public void insertBenchmarkResult(
+        UUID runId,
+        UUID profileId,
+        long retrievalMs,
+        long snapshotMs,
+        long rankingMs,
+        long feedMs,
+        Long evaluationMs,
+        int candidates,
+        int cacheHits,
+        int cacheMisses,
+        Map<String, Object> result
+    ) {
         jdbcTemplate.update(
             """
                 insert into ranking_benchmark_results (
                     id, benchmark_run_id, profile_id, retrieval_latency_ms, snapshot_latency_ms,
-                    ranking_latency_ms, feed_latency_ms, candidate_count, result_json
+                    ranking_latency_ms, feed_latency_ms, evaluation_latency_ms, candidate_count,
+                    cache_hit_count, cache_miss_count, result_json
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, '{}'::jsonb)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
                 """,
             UUID.randomUUID(),
             runId,
@@ -186,7 +199,11 @@ public class ScaleRepository {
             snapshotMs,
             rankingMs,
             feedMs,
-            candidates
+            evaluationMs,
+            candidates,
+            cacheHits,
+            cacheMisses,
+            toJson(result)
         );
     }
 

@@ -12,6 +12,7 @@ import com.matchgraph.api.ranking.RankingDecision;
 import com.matchgraph.api.ranking.RankingService;
 import com.matchgraph.api.retrieval.CandidateRetrievalRun;
 import com.matchgraph.api.retrieval.CandidateRetrievalService;
+import com.matchgraph.api.retrieval.HardExclusionService;
 import com.matchgraph.api.retrieval.RunRetrievalRequest;
 import com.matchgraph.api.shared.cache.OnlineServingCacheService;
 
@@ -32,6 +33,7 @@ public class DiscoveryFeedService {
     private final ProfileService profileService;
     private final ExperimentService experimentService;
     private final OnlineServingCacheService cacheService;
+    private final HardExclusionService hardExclusionService;
 
     public DiscoveryFeedService(
         FeedRepository feedRepository,
@@ -40,7 +42,8 @@ public class DiscoveryFeedService {
         RankingService rankingService,
         ProfileService profileService,
         ExperimentService experimentService,
-        OnlineServingCacheService cacheService
+        OnlineServingCacheService cacheService,
+        HardExclusionService hardExclusionService
     ) {
         this.feedRepository = feedRepository;
         this.candidateRetrievalService = candidateRetrievalService;
@@ -49,6 +52,7 @@ public class DiscoveryFeedService {
         this.profileService = profileService;
         this.experimentService = experimentService;
         this.cacheService = cacheService;
+        this.hardExclusionService = hardExclusionService;
     }
 
     @Transactional
@@ -106,6 +110,7 @@ public class DiscoveryFeedService {
         int sanitizedLimit = sanitizeLimit(limit);
         String cacheKey = cacheService.feedPageKey(profileId, sanitizedLimit, cursor);
         return cacheService.get(cacheKey, FeedPage.class)
+            .filter(page -> cachedPageStillVisible(profileId, page, cacheKey))
             .map(page -> new FeedPage(page.items(), page.nextCursor(), java.util.Map.of("cacheHit", true, "cacheCategory", "feedPage")))
             .orElseGet(() -> readAndCache(profileId, sanitizedLimit, cursor, cacheKey));
     }
@@ -114,7 +119,7 @@ public class DiscoveryFeedService {
         int afterPosition = parseCursor(cursor);
         FeedSnapshot snapshot = feedRepository.activeSnapshot(profileId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "active discovery feed not found"));
-        List<FeedItem> items = feedRepository.page(snapshot.id(), afterPosition, sanitizedLimit);
+        List<FeedItem> items = visibleItems(profileId, feedRepository.page(snapshot.id(), afterPosition, sanitizedLimit));
         String nextCursor = items.size() < sanitizedLimit || items.isEmpty()
             ? null
             : String.valueOf(items.getLast().position());
@@ -122,6 +127,20 @@ public class DiscoveryFeedService {
         cacheService.putFeed(cacheKey, page);
         cacheService.putFeed(cacheService.activeFeedKey(profileId), snapshot.id());
         return page;
+    }
+
+    private boolean cachedPageStillVisible(UUID profileId, FeedPage page, String cacheKey) {
+        boolean visible = visibleItems(profileId, page.items()).size() == page.items().size();
+        if (!visible) {
+            cacheService.invalidateFeed(profileId);
+        }
+        return visible;
+    }
+
+    private List<FeedItem> visibleItems(UUID profileId, List<FeedItem> items) {
+        return items.stream()
+            .filter(item -> hardExclusionService.exclusionReason(profileId, item.candidateProfileId()).isEmpty())
+            .toList();
     }
 
     private int parseCursor(String cursor) {

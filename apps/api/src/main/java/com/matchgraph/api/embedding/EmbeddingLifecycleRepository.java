@@ -64,15 +64,14 @@ public class EmbeddingLifecycleRepository {
     }
 
     public List<EmbeddingRefreshRequest> refreshCandidates(int limit) {
-        return jdbcTemplate.query(
+        jdbcTemplate.update(
             """
-                select id, profile_id, status, reason, requested_by, current_embedding_status,
-                    current_embedding_version, created_at, updated_at
-                from embedding_refresh_requests
-                where status = 'REQUESTED'
-                union all
+                insert into embedding_refresh_requests (
+                    id, profile_id, status, reason, requested_by,
+                    current_embedding_status, current_embedding_version
+                )
                 select gen_random_uuid(), p.id, 'REQUESTED', 'STALE_PROFILE', null,
-                    p.embedding_status, v.version_name, now(), now()
+                    p.embedding_status, v.version_name
                 from profiles p
                 left join profile_embeddings e on e.profile_id = p.id and e.is_active
                 left join profile_embedding_versions v on v.id = e.embedding_version_id
@@ -81,6 +80,14 @@ public class EmbeddingLifecycleRepository {
                     select 1 from embedding_refresh_requests r
                     where r.profile_id = p.id and r.status in ('REQUESTED', 'PLANNED')
                   )
+                """
+        );
+        return jdbcTemplate.query(
+            """
+                select id, profile_id, status, reason, requested_by, current_embedding_status,
+                    current_embedding_version, created_at, updated_at
+                from embedding_refresh_requests
+                where status = 'REQUESTED'
                 order by created_at
                 limit ?
                 """,

@@ -2,7 +2,6 @@ package com.matchgraph.api.evaluation;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -69,8 +68,8 @@ public class OfflineEvaluationService {
         Set<String> diversitySources = new HashSet<>();
 
         for (List<OfflineEvaluationRepository.DecisionLabelRow> decisionRows : byDecision.values()) {
-            long positives = decisionRows.stream().filter(row -> POSITIVE.contains(row.eventType())).count();
-            long negatives = decisionRows.stream().filter(row -> NEGATIVE.contains(row.eventType())).count();
+            long positives = decisionRows.stream().filter(row -> positive(row.eventType())).count();
+            long negatives = decisionRows.stream().filter(row -> negative(row.eventType())).count();
             long labels = positives + negatives;
             if (labels > 0) {
                 labelled++;
@@ -91,7 +90,27 @@ public class OfflineEvaluationService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("positiveLabels", POSITIVE);
         result.put("negativeLabels", NEGATIVE);
+        result.put("labelSemantics", Map.of(
+            "positive", "candidate has LIKE, PROFILE_VIEW, or MATCH_CREATED after the stored decision",
+            "negative", "candidate has PASS, SKIP, BLOCK, or REPORT after the stored decision",
+            "unlabelled", "decision has no positive or negative labels inside the evaluated top K rows"
+        ));
         result.put("k", k);
+        result.put("denominators", Map.of(
+            "decisionAverage", Math.max(1, evaluated),
+            "coverageRows", Math.max(1, rows.size()),
+            "precisionAtK", "positive labelled rows divided by min(k, ranked rows) per decision, averaged across evaluated decisions",
+            "recallAtK", "positive labelled rows divided by all positive plus negative labelled rows per decision, averaged across evaluated decisions",
+            "mrr", "reciprocal rank of the first positive label per decision, averaged across evaluated decisions",
+            "ndcgAtK", "binary positive-label DCG divided by ideal binary DCG per decision, averaged across evaluated decisions"
+        ));
+        result.put("coverageSemantics", "unique candidate_profile_id count divided by evaluated top-K row count");
+        result.put("diversitySemantics", "unique source_types_json combinations divided by evaluated top-K row count");
+        result.put("evaluatedDecisionCount", evaluated);
+        result.put("labelledDecisionCount", labelled);
+        result.put("unlabelledDecisionCount", evaluated - labelled);
+        result.put("staleEmbeddingCount", staleEmbeddingCount);
+        result.put("mutationSemantics", "offline evaluation reads ranking decisions, feed snapshots, retrieval runs, and feature snapshot runs; it only writes offline evaluation run/result rows");
         return new OfflineEvaluationRepository.EvaluationStats(
             precisionSum.divide(denominator, 6, RoundingMode.HALF_UP),
             recallSum.divide(denominator, 6, RoundingMode.HALF_UP),
@@ -104,13 +123,13 @@ public class OfflineEvaluationService {
             labelled,
             evaluated - labelled,
             staleEmbeddingCount,
-            new HashMap<>(result)
+            result
         );
     }
 
     private BigDecimal reciprocalRank(List<OfflineEvaluationRepository.DecisionLabelRow> rows) {
         return rows.stream()
-            .filter(row -> POSITIVE.contains(row.eventType()))
+            .filter(row -> positive(row.eventType()))
             .map(row -> BigDecimal.ONE.divide(BigDecimal.valueOf(row.position()), 6, RoundingMode.HALF_UP))
             .findFirst()
             .orElse(BigDecimal.ZERO);
@@ -120,7 +139,7 @@ public class OfflineEvaluationService {
         double dcg = 0.0d;
         int positives = 0;
         for (OfflineEvaluationRepository.DecisionLabelRow row : rows) {
-            if (POSITIVE.contains(row.eventType())) {
+            if (positive(row.eventType())) {
                 positives++;
                 dcg += 1.0d / (Math.log(row.position() + 1) / Math.log(2));
             }
@@ -137,5 +156,13 @@ public class OfflineEvaluationService {
             return BigDecimal.ZERO;
         }
         return BigDecimal.valueOf(numerator).divide(BigDecimal.valueOf(denominator), 6, RoundingMode.HALF_UP);
+    }
+
+    private boolean positive(String eventType) {
+        return eventType != null && POSITIVE.contains(eventType);
+    }
+
+    private boolean negative(String eventType) {
+        return eventType != null && NEGATIVE.contains(eventType);
     }
 }
