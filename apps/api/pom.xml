@@ -115,6 +115,12 @@
                         <database>
                             <name>org.jooq.meta.extensions.ddl.DDLDatabase</name>
                             <properties>
+                                <!--
+                                    Intentionally limited to the foundation probe table. The full Flyway schema
+                                    uses PostgreSQL extension syntax (pgvector/PostGIS/JSONB) that jOOQ DDLDatabase
+                                    does not parse reliably here; runtime persistence uses SQL/JdbcTemplate, not
+                                    generated jOOQ classes for the product schema.
+                                -->
                                 <property>
                                     <key>scripts</key>
                                     <value>src/main/resources/db/migration/V1__foundation_schema.sql</value>

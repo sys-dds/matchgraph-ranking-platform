@@ -1,0 +1,29 @@
+spring:
+  datasource:
+    url: ${MATCHGRAPH_TEST_DB_URL:jdbc:postgresql://127.0.0.1:1/matchgraph_test}
+    username: ${MATCHGRAPH_TEST_DB_USER:matchgraph}
+    password: ${MATCHGRAPH_TEST_DB_PASSWORD:matchgraph}
+  data:
+    redis:
+      host: ${MATCHGRAPH_TEST_REDIS_HOST:127.0.0.1}
+      port: ${MATCHGRAPH_TEST_REDIS_PORT:1}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  kafka:
+    bootstrap-servers: ${MATCHGRAPH_TEST_KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:1}
+
+matchgraph:
+  kafka:
+    bootstrap-servers: ${MATCHGRAPH_TEST_KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:1}
+  clickhouse:
+    url: ${MATCHGRAPH_TEST_CLICKHOUSE_URL:jdbc:clickhouse://127.0.0.1:1/matchgraph}
+  redis:
+    host: ${MATCHGRAPH_TEST_REDIS_HOST:127.0.0.1}
+    port: ${MATCHGRAPH_TEST_REDIS_PORT:1}
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
